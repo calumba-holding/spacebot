@@ -7,7 +7,7 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use serenity::all::{
     ChannelId, ChannelType, Context, CreateThread, EditMessage, EventHandler, GatewayIntents,
-    GetMessages, GuildId, Http, Message, MessageId, Ready, ShardManager, UserId,
+    GetMessages, GuildId, Http, Message, MessageId, Ready, ReactionType, ShardManager, UserId,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -193,6 +193,18 @@ impl Messaging for DiscordAdapter {
                         }
                     }
                 }
+            }
+            OutboundResponse::Reaction(emoji) => {
+                let message_id = message
+                    .metadata
+                    .get("discord_message_id")
+                    .and_then(|v| v.as_u64())
+                    .context("missing discord_message_id for reaction")?;
+
+                channel_id
+                    .create_reaction(&*http, MessageId::new(message_id), ReactionType::Unicode(emoji))
+                    .await
+                    .context("failed to add reaction")?;
             }
             OutboundResponse::StreamStart => {
                 self.stop_typing(&message.id).await;

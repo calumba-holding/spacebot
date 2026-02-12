@@ -6,7 +6,7 @@ How Spacebot gives LLM processes the ability to act.
 
 Every tool implements Rig's `Tool` trait and lives in `src/tools/`. Tools are organized by function, not by consumer. Which process gets which tools is configured via ToolServer factory functions in `src/tools.rs`.
 
-All 12 tools:
+All 15 tools:
 
 | Tool | Purpose | Consumers |
 |------|---------|-----------|
@@ -15,6 +15,8 @@ All 12 tools:
 | `spawn_worker` | Create a new worker process | Channel, Branch |
 | `route` | Send follow-up to an active interactive worker | Channel |
 | `cancel` | Stop a running worker or branch | Channel |
+| `skip` | Opt out of responding to the current message | Channel |
+| `react` | Add an emoji reaction to the user's message | Channel |
 | `memory_save` | Write a memory to the store | Channel, Branch, Cortex |
 | `memory_recall` | Search memories via hybrid search | Branch |
 | `set_status` | Report worker progress to the channel | Worker |
@@ -22,6 +24,7 @@ All 12 tools:
 | `file` | Read, write, and list files | Worker |
 | `exec` | Run subprocesses with specific args/env | Worker |
 | `browser` | Headless Chrome automation (navigate, click, screenshot) | Worker |
+| `heartbeat` | Manage scheduled heartbeat tasks | Channel |
 
 ## ToolServer Topology
 
@@ -47,6 +50,9 @@ One per agent, shared across all channels and branches for that agent.
 │   spawn_worker   (channel_id, event_tx) │
 │   route          (channel_id, event_tx) │
 │   cancel         (channel_id, event_tx) │
+│   skip           (skip_flag)            │
+│   react          (response_tx)          │
+│   heartbeat      (heartbeat_store)      │
 └─────────────────────────────────────────┘
 ```
 
@@ -115,7 +121,7 @@ create_cortex_tool_server(memory_search) -> ToolServerHandle
 
 ### Dynamic tools (added/removed at runtime)
 
-`reply`, `branch`, `spawn_worker`, `route`, `cancel` on the channel ToolServer. Added via `handle.add_tool()` and removed via `handle.remove_tool()`. The add/remove cycle is per conversation turn:
+`reply`, `branch`, `spawn_worker`, `route`, `cancel`, `skip`, `react` on the channel ToolServer. Added via `handle.add_tool()` and removed via `handle.remove_tool()`. The add/remove cycle is per conversation turn:
 
 ```
 1. Message arrives on channel

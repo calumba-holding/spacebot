@@ -216,6 +216,8 @@ pub enum OutboundResponse {
         thread_name: String,
         text: String,
     },
+    /// Add a reaction emoji to the triggering message.
+    Reaction(String),
     StreamStart,
     StreamChunk(String),
     StreamEnd,
@@ -227,6 +229,8 @@ pub enum OutboundResponse {
 #[serde(rename_all = "snake_case")]
 pub enum StatusUpdate {
     Thinking,
+    /// Cancel the typing indicator (e.g. when the skip tool fires).
+    StopTyping,
     ToolStarted { tool_name: String },
     ToolCompleted { tool_name: String },
     BranchStarted { branch_id: BranchId },

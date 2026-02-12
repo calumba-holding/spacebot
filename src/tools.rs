@@ -27,6 +27,8 @@ pub mod branch_tool;
 pub mod spawn_worker;
 pub mod route;
 pub mod cancel;
+pub mod skip;
+pub mod react;
 pub mod memory_save;
 pub mod memory_recall;
 pub mod set_status;
@@ -41,6 +43,8 @@ pub use branch_tool::{BranchTool, BranchArgs, BranchOutput, BranchError};
 pub use spawn_worker::{SpawnWorkerTool, SpawnWorkerArgs, SpawnWorkerOutput, SpawnWorkerError};
 pub use route::{RouteTool, RouteArgs, RouteOutput, RouteError};
 pub use cancel::{CancelTool, CancelArgs, CancelOutput, CancelError};
+pub use skip::{SkipTool, SkipArgs, SkipOutput, SkipError, SkipFlag, new_skip_flag};
+pub use react::{ReactTool, ReactArgs, ReactOutput, ReactError};
 pub use memory_save::{MemorySaveTool, MemorySaveArgs, MemorySaveOutput, MemorySaveError, AssociationInput};
 pub use memory_recall::{MemoryRecallTool, MemoryRecallArgs, MemoryRecallOutput, MemoryRecallError, MemoryOutput};
 pub use set_status::{SetStatusTool, SetStatusArgs, SetStatusOutput, SetStatusError};
@@ -58,6 +62,7 @@ use rig::tool::Tool as _;
 use rig::tool::server::{ToolServer, ToolServerHandle};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{broadcast, mpsc};
 
 /// Create the shared ToolServer for channels and branches.
@@ -67,8 +72,7 @@ use tokio::sync::{broadcast, mpsc};
 /// conversation turn because they hold per-channel state.
 pub fn create_channel_tool_server(memory_search: Arc<MemorySearch>) -> ToolServerHandle {
     ToolServer::new()
-        .tool(MemorySaveTool::new(memory_search.clone()))
-        .tool(MemoryRecallTool::new(memory_search))
+        .tool(MemorySaveTool::new(memory_search))
         .run()
 }
 
@@ -83,9 +87,10 @@ pub async fn add_channel_tools(
     state: ChannelState,
     response_tx: mpsc::Sender<OutboundResponse>,
     conversation_id: impl Into<String>,
+    skip_flag: SkipFlag,
 ) -> Result<(), rig::tool::server::ToolServerError> {
     handle.add_tool(ReplyTool::new(
-        response_tx,
+        response_tx.clone(),
         conversation_id,
         state.conversation_logger.clone(),
         state.channel_id.clone(),
@@ -94,6 +99,8 @@ pub async fn add_channel_tools(
     handle.add_tool(SpawnWorkerTool::new(state.clone())).await?;
     handle.add_tool(RouteTool::new(state.clone())).await?;
     handle.add_tool(CancelTool::new(state)).await?;
+    handle.add_tool(SkipTool::new(skip_flag, response_tx.clone())).await?;
+    handle.add_tool(ReactTool::new(response_tx)).await?;
     Ok(())
 }
 
@@ -109,7 +116,50 @@ pub async fn remove_channel_tools(
     handle.remove_tool(SpawnWorkerTool::NAME).await?;
     handle.remove_tool(RouteTool::NAME).await?;
     handle.remove_tool(CancelTool::NAME).await?;
+    handle.remove_tool(SkipTool::NAME).await?;
+    handle.remove_tool(ReactTool::NAME).await?;
     Ok(())
+}
+
+/// Tracks the number of active branches sharing the ToolServer.
+///
+/// `memory_recall` is added when the first branch starts and removed when
+/// the last branch finishes. This keeps it off the channel (which shares
+/// the same ToolServer) while allowing concurrent branches to use it.
+pub struct BranchToolGuard {
+    active_count: AtomicUsize,
+    memory_search: Arc<MemorySearch>,
+}
+
+impl BranchToolGuard {
+    pub fn new(memory_search: Arc<MemorySearch>) -> Self {
+        Self {
+            active_count: AtomicUsize::new(0),
+            memory_search,
+        }
+    }
+
+    /// Register `memory_recall` if this is the first active branch.
+    pub async fn acquire(&self, handle: &ToolServerHandle) {
+        let previous = self.active_count.fetch_add(1, Ordering::SeqCst);
+        if previous == 0 {
+            if let Err(error) = handle.add_tool(
+                MemoryRecallTool::new(self.memory_search.clone())
+            ).await {
+                tracing::error!(%error, "failed to add memory_recall for branch");
+            }
+        }
+    }
+
+    /// Remove `memory_recall` if this was the last active branch.
+    pub async fn release(&self, handle: &ToolServerHandle) {
+        let previous = self.active_count.fetch_sub(1, Ordering::SeqCst);
+        if previous == 1 {
+            if let Err(error) = handle.remove_tool(MemoryRecallTool::NAME).await {
+                tracing::warn!(%error, "failed to remove memory_recall after last branch");
+            }
+        }
+    }
 }
 
 /// Create a per-worker ToolServer with task-appropriate tools.

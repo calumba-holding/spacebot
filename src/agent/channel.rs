@@ -32,6 +32,9 @@ pub struct ChannelState {
     pub deps: AgentDeps,
     pub conversation_logger: ConversationLogger,
     pub screenshot_dir: std::path::PathBuf,
+    /// Manages memory_recall tool lifecycle on the shared ToolServer.
+    /// Added when the first branch starts, removed when the last finishes.
+    pub branch_tool_guard: Arc<crate::tools::BranchToolGuard>,
 }
 
 impl std::fmt::Debug for ChannelState {
@@ -95,6 +98,8 @@ impl Channel {
             conversation_logger.clone(),
         );
 
+        let branch_tool_guard = Arc::new(crate::tools::BranchToolGuard::new(deps.memory_search.clone()));
+
         let state = ChannelState {
             channel_id: id.clone(),
             history: history.clone(),
@@ -104,6 +109,7 @@ impl Channel {
             deps: deps.clone(),
             conversation_logger,
             screenshot_dir,
+            branch_tool_guard,
         };
 
         let self_tx = message_tx.clone();
@@ -233,13 +239,15 @@ impl Channel {
             system_prompt.push_str(&status_text);
         }
 
-        // Register per-turn channel tools (reply, branch, spawn_worker, route, cancel)
+        // Register per-turn channel tools (reply, branch, spawn_worker, route, cancel, skip)
         let conversation_id = message.conversation_id.clone();
+        let skip_flag = crate::tools::new_skip_flag();
         if let Err(error) = crate::tools::add_channel_tools(
             &self.deps.tool_server,
             self.state.clone(),
             self.response_tx.clone(),
             &conversation_id,
+            skip_flag.clone(),
         ).await {
             tracing::error!(%error, "failed to add channel tools");
             return Err(AgentError::Other(error.into()).into());
@@ -258,7 +266,7 @@ impl Channel {
             .tool_server_handle(self.deps.tool_server.clone())
             .build();
 
-        // Signal typing indicator before the LLM starts generating
+        // Signal typing indicator while the LLM processes
         let _ = self.response_tx.send(OutboundResponse::Status(crate::StatusUpdate::Thinking)).await;
 
         // If there are attachments, inject them into history as a user message before the prompt.
@@ -286,17 +294,23 @@ impl Channel {
 
         match result {
             Ok(response) => {
-                // If the LLM returned text without using the reply tool, send it
-                // directly. Some models respond with text instead of tool calls.
-                let text = response.trim();
-                if !text.is_empty() {
-                    self.state.conversation_logger.log_bot_message(&self.state.channel_id, text);
-                    if let Err(error) = self.response_tx.send(OutboundResponse::Text(text.to_string())).await {
-                        tracing::error!(%error, channel_id = %self.id, "failed to send fallback reply");
-                    }
-                }
+                let skipped = skip_flag.load(std::sync::atomic::Ordering::Relaxed);
 
-                tracing::debug!(channel_id = %self.id, "channel turn completed");
+                if skipped {
+                    tracing::debug!(channel_id = %self.id, "channel turn skipped (no response)");
+                } else {
+                    // If the LLM returned text without using the reply tool, send it
+                    // directly. Some models respond with text instead of tool calls.
+                    let text = response.trim();
+                    if !text.is_empty() {
+                        self.state.conversation_logger.log_bot_message(&self.state.channel_id, text);
+                        if let Err(error) = self.response_tx.send(OutboundResponse::Text(text.to_string())).await {
+                            tracing::error!(%error, channel_id = %self.id, "failed to send fallback reply");
+                        }
+                    }
+
+                    tracing::debug!(channel_id = %self.id, "channel turn completed");
+                }
             }
             Err(rig::completion::PromptError::MaxTurnsError { .. }) => {
                 tracing::warn!(channel_id = %self.id, "channel hit max turns");
@@ -431,11 +445,18 @@ pub async fn spawn_branch_from_state(
     
     let branch_id = branch.id;
     
+    // Add memory_recall to the shared ToolServer (ref-counted across branches)
+    state.branch_tool_guard.acquire(&state.deps.tool_server).await;
+
     // Spawn the branch as a tokio task
+    let branch_tool_guard = state.branch_tool_guard.clone();
+    let tool_server = state.deps.tool_server.clone();
     let handle = tokio::spawn(async move {
         if let Err(error) = branch.run(&prompt).await {
             tracing::error!(branch_id = %branch_id, %error, "branch failed");
         }
+        // Release memory_recall when this branch finishes
+        branch_tool_guard.release(&tool_server).await;
     });
     
     {

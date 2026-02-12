@@ -21,7 +21,7 @@ For each piece: reference IronClaw, OpenClaw, Nanobot, and Rig for inspiration, 
 - Memory — types, SQLite store (full CRUD + associations), LanceDB embedding storage + vector search + FTS, fastembed (all-MiniLM-L6-v2, 384 dims, shared via `Arc`), hybrid search (vector + FTS + graph traversal + RRF fusion), `MemorySearch` bundles store + lance + embedder. Maintenance (decay + prune implemented, merge stubbed).
 - Identity — `Identity` struct loads SOUL.md, IDENTITY.md, USER.md from agent workspace with `render()` for prompt injection. `Prompts` struct loads with fallback chain: agent workspace override → shared prompts dir → relative prompts/. Identity context is injected into channel system prompts.
 - Agent loops — all three process types run real Rig agent loops:
-  - **Channel** — `AgentBuilder::new(model).preamble(identity + prompt + status).tool_server_handle(shared).build()`, called per-turn via `agent.prompt().with_history().with_hook()`. Per-turn tool registration/teardown via `add_channel_tools()`/`remove_channel_tools()`. `ChannelState` bundle gives tools (branch, spawn_worker, route, cancel) direct access to channel state via `Arc<RwLock<_>>`.
+  - **Channel** — `AgentBuilder::new(model).preamble(identity + prompt + status).tool_server_handle(shared).build()`, called per-turn via `agent.prompt().with_history().with_hook()`. Per-turn tool registration/teardown via `add_channel_tools()`/`remove_channel_tools()`. `ChannelState` bundle gives tools (branch, spawn_worker, route, cancel, skip, react) direct access to channel state via `Arc<RwLock<_>>`.
   - **Branch** — forks channel history, runs `agent.prompt().with_history().with_hook()` with shared ToolServer (memory_recall, memory_save), `max_turns(10)`. Sends `BranchResult` event on completion. Handles `MaxTurnsError` with partial conclusion extraction.
   - **Worker** — fresh history, per-worker ToolServer (shell, file, exec, set_status), `max_turns(50)`. Interactive mode with follow-up loop on `input_rx`. State machine transitions on completion/failure.
 - StatusBlock — event-driven updates from `ProcessEvent`, renders to context string
@@ -93,7 +93,7 @@ For each piece: reference IronClaw, OpenClaw, Nanobot, and Rig for inspiration, 
 - [x] `RoutingConfig` — process-type defaults, task-type overrides, fallback chains
 - [x] Fallback logic in `SpacebotModel` — retry with next model in chain on 429/502/503/504
 - [x] Rate limit tracking — deprioritize 429'd models for configurable cooldown
-- [x] Shared ToolServer for channel/branch tools (memory_save, memory_recall at startup; reply, branch, spawn_worker, route, cancel added per-turn)
+- [x] Shared ToolServer for channel/branch tools (memory_save, memory_recall at startup; reply, branch, spawn_worker, route, cancel, skip, react added per-turn)
 - [x] Per-worker ToolServer factory (shell, file, exec, set_status)
 - [x] Real Rig agent loop: `AgentBuilder::new(model).preamble().tool_server_handle().build()` → `agent.prompt().with_history().with_hook().await`
 - [x] Status block injection — prepend rendered status to each prompt call

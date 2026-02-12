@@ -229,7 +229,7 @@ async fn run_compaction(
 
     let agent = AgentBuilder::new(model)
         .preamble(compactor_prompt)
-        .default_max_turns(3)
+        .default_max_turns(10)
         .tool_server_handle(tool_server)
         .build();
 
@@ -370,23 +370,15 @@ fn render_messages_as_transcript(messages: &[Message]) -> String {
     output
 }
 
-/// Extract the summary section from the compaction LLM's response.
+/// Extract the summary from the compaction LLM's first response.
 ///
-/// The COMPACTOR.md prompt asks for a `## Summary` section followed by
-/// `## Extracted Memories`. We want just the summary text.
+/// The prompt asks for plain summary text. If the LLM wraps it in a
+/// `## Summary` header anyway, strip it out.
 fn extract_summary_section(response: &str) -> String {
-    // Look for "## Summary" header and extract until "## Extracted Memories" or end
     if let Some(start) = response.find("## Summary") {
         let after_header = &response[start + "## Summary".len()..];
-        let trimmed = after_header.trim_start_matches(|c: char| c == '\n' || c == '\r');
-
-        if let Some(end) = trimmed.find("## Extracted Memories") {
-            trimmed[..end].trim().to_string()
-        } else {
-            trimmed.trim().to_string()
-        }
+        after_header.trim().to_string()
     } else {
-        // No structured output — use the whole response as the summary
         response.trim().to_string()
     }
 }

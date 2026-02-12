@@ -22,7 +22,7 @@ A channel does NOT: execute tasks directly, search memories itself, do heavy too
 
 The channel is always responsive — never blocked by work, never frozen by compaction. When it needs to think, it branches. When it needs work done, it spawns a worker. When context gets full, the compactor has already handled it.
 
-**Tools:** reply, branch, spawn_worker, memory_save, route_to_worker, cancel  
+**Tools:** reply, branch, spawn_worker, route, cancel, skip, react, memory_save  
 **Context:** Conversation history + compaction summaries + status block  
 **History:** Persistent `Vec<Message>`, passed via `agent.prompt().with_history(&mut history)`
 
@@ -129,16 +129,20 @@ src/
 │
 ├── tools.rs            → tools/
 │   ├── reply.rs        — send message to user (channel only)
-│   ├── branch.rs       — fork context and think (channel only)
+│   ├── branch_tool.rs  — fork context and think (channel only)
 │   ├── spawn_worker.rs — create new worker (channel + branch)
 │   ├── route.rs        — send follow-up to active worker (channel only)
 │   ├── cancel.rs       — cancel worker or branch (channel only)
+│   ├── skip.rs         — opt out of responding (channel only)
+│   ├── react.rs        — add emoji reaction (channel only)
 │   ├── memory_save.rs  — write memory to store (channel + branch)
-│   ├── memory_recall.rs— search + curate memories (branch workers)
+│   ├── memory_recall.rs— search + curate memories (branch only)
 │   ├── set_status.rs   — update worker status (workers only)
 │   ├── shell.rs        — execute shell commands (task workers)
 │   ├── file.rs         — read/write/list files (task workers)
-│   └── exec.rs         — run subprocess (task workers)
+│   ├── exec.rs         — run subprocess (task workers)
+│   ├── browser.rs      — web browsing (task workers)
+│   └── heartbeat.rs    — heartbeat management (channel only)
 │
 ├── memory.rs           → memory/
 │   ├── store.rs        — MemoryStore: CRUD + graph ops (SQLite)
@@ -178,7 +182,7 @@ src/
 
 Module roots (e.g., `src/memory.rs`) contain `mod` declarations and re-exports. Never create `mod.rs` files.
 
-Tools are organized by function, not by consumer. Which agents get which tools is configured in `agent/channel.rs`, `agent/branch.rs`, `agent/worker.rs`.
+Tools are organized by function, not by consumer. Which processes get which tools is configured via factory functions in `tools.rs`.
 
 ## Three Databases
 
