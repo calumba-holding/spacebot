@@ -170,6 +170,7 @@ impl Tool for MemorySaveTool {
             "event" => MemoryType::Event,
             "observation" => MemoryType::Observation,
             "goal" => MemoryType::Goal,
+            "todo" => MemoryType::Todo,
             _ => MemoryType::Fact,
         };
 

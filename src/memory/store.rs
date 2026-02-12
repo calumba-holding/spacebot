@@ -278,6 +278,7 @@ fn parse_memory_type(s: &str) -> MemoryType {
         "event" => MemoryType::Event,
         "observation" => MemoryType::Observation,
         "goal" => MemoryType::Goal,
+        "todo" => MemoryType::Todo,
         _ => MemoryType::Fact,
     }
 }

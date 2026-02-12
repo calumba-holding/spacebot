@@ -97,7 +97,7 @@ fn test_bulletin_prompts_cover_all_memory_types() {
 
     // The cortex user prompt in cortex.rs lists types inline. Check the same
     // set against the canonical list so drift is caught at compile time.
-    let cortex_user_prompt_types = ["identity", "fact", "decision", "event", "preference", "observation", "goal"];
+    let cortex_user_prompt_types = ["identity", "fact", "decision", "event", "preference", "observation", "goal", "todo"];
 
     for memory_type in spacebot::memory::types::MemoryType::ALL {
         let type_str = memory_type.to_string();

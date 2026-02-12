@@ -195,10 +195,8 @@ impl Channel {
             }
         };
 
-        // Format the user text with sender attribution so the LLM knows who's talking
         let user_text = format_user_message(&raw_text, &message);
 
-        // Download and process attachments into LLM-ready content
         let attachment_content = if !attachments.is_empty() {
             download_attachments(&self.deps, &attachments).await
         } else {
@@ -225,58 +223,97 @@ impl Channel {
             self.conversation_context = Some(build_conversation_context(&message));
         }
 
-        // Build the system prompt: identity + channel prompt + conversation context + status
-        let status_text = {
-            let status = self.state.status_block.read().await;
-            status.render()
-        };
+        let system_prompt = self.build_system_prompt().await;
+
+        let (result, skip_flag) = self.run_agent_turn(
+            &user_text,
+            &system_prompt,
+            &message.conversation_id,
+            attachment_content,
+        ).await?;
+
+        self.handle_agent_result(result, &skip_flag).await;
+
+        // Check context size and trigger compaction if needed
+        if let Err(error) = self.compactor.check_and_compact().await {
+            tracing::warn!(channel_id = %self.id, %error, "compaction check failed");
+        }
+
+        // Increment message counter and spawn memory persistence branch if threshold reached
+        if message.source != "system" {
+            self.message_count += 1;
+            self.check_memory_persistence().await;
+        }
+        
+        Ok(())
+    }
+
+    /// Assemble the full system prompt from identity, memory, skills, and status.
+    async fn build_system_prompt(&self) -> String {
         let rc = &self.deps.runtime_config;
         let identity_context = rc.identity.load().render();
         let channel_prompt = rc.prompts.load().channel.clone();
         let skills = rc.skills.load();
 
-        let mut system_prompt = String::new();
+        let mut prompt = String::new();
+
         if !identity_context.is_empty() {
-            system_prompt.push_str(&identity_context);
-            system_prompt.push_str("\n\n");
+            prompt.push_str(&identity_context);
+            prompt.push_str("\n\n");
         }
+
         let memory_bulletin = rc.memory_bulletin.load();
         if !memory_bulletin.is_empty() {
-            system_prompt.push_str("## Memory Context\n\n");
-            system_prompt.push_str(&memory_bulletin);
-            system_prompt.push_str("\n\n");
+            prompt.push_str("## Memory Context\n\n");
+            prompt.push_str(&memory_bulletin);
+            prompt.push_str("\n\n");
         }
-        system_prompt.push_str(&channel_prompt);
+
+        prompt.push_str(&channel_prompt);
+
         let skills_prompt = skills.render_channel_prompt();
         if !skills_prompt.is_empty() {
-            system_prompt.push_str("\n\n");
-            system_prompt.push_str(&skills_prompt);
+            prompt.push_str("\n\n");
+            prompt.push_str(&skills_prompt);
         }
 
-        // Inject dynamic worker capabilities so the channel knows what its
-        // workers can do (conditional tools like browser and web search
-        // depend on runtime config).
-        let worker_capabilities = build_worker_capabilities(rc);
-        system_prompt.push_str("\n\n");
-        system_prompt.push_str(&worker_capabilities);
+        prompt.push_str("\n\n");
+        prompt.push_str(&build_worker_capabilities(rc));
 
         if let Some(context) = &self.conversation_context {
-            system_prompt.push_str("\n\n## Conversation Context\n\n");
-            system_prompt.push_str(context);
-        }
-        if !status_text.is_empty() {
-            system_prompt.push_str("\n\n## Current Status\n\n");
-            system_prompt.push_str(&status_text);
+            prompt.push_str("\n\n## Conversation Context\n\n");
+            prompt.push_str(context);
         }
 
-        // Register per-turn channel tools (reply, branch, spawn_worker, route, cancel, skip)
-        let conversation_id = message.conversation_id.clone();
+        let status_text = {
+            let status = self.state.status_block.read().await;
+            status.render()
+        };
+        if !status_text.is_empty() {
+            prompt.push_str("\n\n## Current Status\n\n");
+            prompt.push_str(&status_text);
+        }
+
+        prompt
+    }
+
+    /// Register per-turn tools, run the LLM agentic loop, and clean up.
+    ///
+    /// Returns the prompt result and skip flag for the caller to dispatch.
+    async fn run_agent_turn(
+        &self,
+        user_text: &str,
+        system_prompt: &str,
+        conversation_id: &str,
+        attachment_content: Vec<UserContent>,
+    ) -> Result<(std::result::Result<String, rig::completion::PromptError>, crate::tools::SkipFlag)> {
         let skip_flag = crate::tools::new_skip_flag();
+
         if let Err(error) = crate::tools::add_channel_tools(
             &self.tool_server,
             self.state.clone(),
             self.response_tx.clone(),
-            &conversation_id,
+            conversation_id,
             skip_flag.clone(),
             self.deps.heartbeat_tool.clone(),
         ).await {
@@ -284,7 +321,7 @@ impl Channel {
             return Err(AgentError::Other(error.into()).into());
         }
 
-        // Construct the model and agent for this turn
+        let rc = &self.deps.runtime_config;
         let routing = rc.routing.load();
         let max_turns = **rc.max_turns.load();
         let model_name = routing.resolve(ProcessType::Channel, None);
@@ -292,16 +329,14 @@ impl Channel {
             .with_routing((**routing).clone());
 
         let agent = AgentBuilder::new(model)
-            .preamble(&system_prompt)
+            .preamble(system_prompt)
             .default_max_turns(max_turns)
             .tool_server_handle(self.tool_server.clone())
             .build();
 
-        // Signal typing indicator while the LLM processes
         let _ = self.response_tx.send(OutboundResponse::Status(crate::StatusUpdate::Thinking)).await;
 
-        // If there are attachments, inject them into history as a user message before the prompt.
-        // The LLM will see the images/files followed by the user's text message.
+        // Inject attachments as a user message before the text prompt
         if !attachment_content.is_empty() {
             let mut history = self.state.history.write().await;
             let content = OneOrMany::many(attachment_content)
@@ -313,13 +348,12 @@ impl Channel {
         // Clone history out so the write lock is released before the agentic loop.
         // The branch tool needs a read lock on history to clone it for the branch,
         // and holding a write lock across the entire agentic loop would deadlock.
-        // The shared state keeps a snapshot so branches can still read it.
         let mut history = {
             let guard = self.state.history.read().await;
             guard.clone()
         };
 
-        let result = agent.prompt(&user_text)
+        let result = agent.prompt(user_text)
             .with_history(&mut history)
             .with_hook(self.hook.clone())
             .await;
@@ -330,11 +364,19 @@ impl Channel {
             *guard = history;
         }
 
-        // Clean up per-turn tools
         if let Err(error) = crate::tools::remove_channel_tools(&self.tool_server).await {
             tracing::warn!(%error, "failed to remove channel tools");
         }
 
+        Ok((result, skip_flag))
+    }
+
+    /// Dispatch the LLM result: send fallback text, log errors, clean up typing.
+    async fn handle_agent_result(
+        &self,
+        result: std::result::Result<String, rig::completion::PromptError>,
+        skip_flag: &crate::tools::SkipFlag,
+    ) {
         match result {
             Ok(response) => {
                 let skipped = skip_flag.load(std::sync::atomic::Ordering::Relaxed);
@@ -368,19 +410,6 @@ impl Channel {
 
         // Ensure typing indicator is always cleaned up, even on error paths
         let _ = self.response_tx.send(OutboundResponse::Status(crate::StatusUpdate::StopTyping)).await;
-
-        // Check context size and trigger compaction if needed
-        if let Err(error) = self.compactor.check_and_compact().await {
-            tracing::warn!(channel_id = %self.id, %error, "compaction check failed");
-        }
-
-        // Increment message counter and spawn memory persistence branch if threshold reached
-        if message.source != "system" {
-            self.message_count += 1;
-            self.check_memory_persistence().await;
-        }
-        
-        Ok(())
     }
     
     /// Handle a process event (branch results, worker completions, status updates).
@@ -510,61 +539,10 @@ pub async fn spawn_branch_from_state(
     description: impl Into<String>,
 ) -> std::result::Result<BranchId, AgentError> {
     let description = description.into();
+    let system_prompt = state.deps.runtime_config.prompts.load().branch.clone();
 
-    // Check branch limit (read live from runtime config)
-    let max_branches = **state.deps.runtime_config.max_concurrent_branches.load();
-    {
-        let branches = state.active_branches.read().await;
-        if branches.len() >= max_branches {
-            return Err(AgentError::BranchLimitReached {
-                channel_id: state.channel_id.to_string(),
-                max: max_branches,
-            });
-        }
-    }
-    
-    // Clone history for the branch
-    let history = {
-        let h = state.history.read().await;
-        h.clone()
-    };
-    
-    let prompt = description.clone();
-    let branch_system_prompt = state.deps.runtime_config.prompts.load().branch.clone();
-    let tool_server = crate::tools::create_branch_tool_server(state.deps.memory_search.clone());
-    let branch_max_turns = **state.deps.runtime_config.branch_max_turns.load();
-    let branch = Branch::new(
-        state.channel_id.clone(),
-        &description,
-        state.deps.clone(),
-        &branch_system_prompt,
-        history,
-        tool_server,
-        branch_max_turns,
-    );
-    
-    let branch_id = branch.id;
-
-    // Spawn the branch as a tokio task
-    let handle = tokio::spawn(async move {
-        if let Err(error) = branch.run(&prompt).await {
-            tracing::error!(branch_id = %branch_id, %error, "branch failed");
-        }
-    });
-    
-    {
-        let mut branches = state.active_branches.write().await;
-        branches.insert(branch_id, handle);
-    }
-    
-    {
-        let mut status = state.status_block.write().await;
-        status.add_branch(branch_id, "thinking...");
-    }
-    
-    tracing::info!(branch_id = %branch_id, "branch spawned");
-    
-    Ok(branch_id)
+    spawn_branch(state, &description, &description, &system_prompt, "thinking...")
+        .await
 }
 
 /// Spawn a silent memory persistence branch.
@@ -576,8 +554,27 @@ async fn spawn_memory_persistence_branch(
     state: &ChannelState,
     deps: &AgentDeps,
 ) -> std::result::Result<BranchId, AgentError> {
-    // Check branch limit
-    let max_branches = **deps.runtime_config.max_concurrent_branches.load();
+    let system_prompt = deps.runtime_config.prompts.load().memory_persistence.clone();
+    let prompt = "Review the recent conversation and persist any important information as memories. \
+                  Start by recalling existing memories related to the topics discussed, then save \
+                  new or updated memories with appropriate associations.";
+
+    spawn_branch(state, "memory persistence", prompt, &system_prompt, "persisting memories...")
+        .await
+}
+
+/// Shared branch spawning logic.
+///
+/// Checks the branch limit, clones history, creates a Branch, spawns it as
+/// a tokio task, and registers it in the channel's active branches and status block.
+async fn spawn_branch(
+    state: &ChannelState,
+    description: &str,
+    prompt: &str,
+    system_prompt: &str,
+    status_label: &str,
+) -> std::result::Result<BranchId, AgentError> {
+    let max_branches = **state.deps.runtime_config.max_concurrent_branches.load();
     {
         let branches = state.active_branches.read().await;
         if branches.len() >= max_branches {
@@ -593,29 +590,25 @@ async fn spawn_memory_persistence_branch(
         h.clone()
     };
 
-    let prompt = "Review the recent conversation and persist any important information as memories. \
-                  Start by recalling existing memories related to the topics discussed, then save \
-                  new or updated memories with appropriate associations.";
-
-    let system_prompt = deps.runtime_config.prompts.load().memory_persistence.clone();
-    let tool_server = crate::tools::create_branch_tool_server(deps.memory_search.clone());
-    let branch_max_turns = **deps.runtime_config.branch_max_turns.load();
+    let tool_server = crate::tools::create_branch_tool_server(state.deps.memory_search.clone());
+    let branch_max_turns = **state.deps.runtime_config.branch_max_turns.load();
 
     let branch = Branch::new(
         state.channel_id.clone(),
-        "memory persistence",
-        deps.clone(),
-        &system_prompt,
+        description,
+        state.deps.clone(),
+        system_prompt,
         history,
         tool_server,
         branch_max_turns,
     );
 
     let branch_id = branch.id;
+    let prompt = prompt.to_owned();
 
     let handle = tokio::spawn(async move {
-        if let Err(error) = branch.run(prompt).await {
-            tracing::error!(branch_id = %branch_id, %error, "memory persistence branch failed");
+        if let Err(error) = branch.run(&prompt).await {
+            tracing::error!(branch_id = %branch_id, %error, "branch failed");
         }
     });
 
@@ -626,8 +619,10 @@ async fn spawn_memory_persistence_branch(
 
     {
         let mut status = state.status_block.write().await;
-        status.add_branch(branch_id, "persisting memories...");
+        status.add_branch(branch_id, status_label);
     }
+
+    tracing::info!(branch_id = %branch_id, description = %status_label, "branch spawned");
 
     Ok(branch_id)
 }
@@ -687,36 +682,15 @@ pub async fn spawn_worker_from_state(
     };
     
     let worker_id = worker.id;
-    
-    // Spawn the worker as a tokio task
-    let deps_event_tx = state.deps.event_tx.clone();
-    let agent_id = state.deps.agent_id.clone();
-    let channel_id = Some(state.channel_id.clone());
-    tokio::spawn(async move {
-        let result = worker.run().await;
-        match result {
-            Ok(result_text) => {
-                let _ = deps_event_tx.send(ProcessEvent::WorkerComplete {
-                    agent_id,
-                    worker_id,
-                    channel_id,
-                    result: result_text,
-                    notify: true,
-                });
-            }
-            Err(error) => {
-                tracing::error!(worker_id = %worker_id, %error, "worker failed");
-                let _ = deps_event_tx.send(ProcessEvent::WorkerComplete {
-                    agent_id,
-                    worker_id,
-                    channel_id,
-                    result: format!("Worker failed: {error}"),
-                    notify: true,
-                });
-            }
-        }
-    });
-    
+
+    spawn_worker_task(
+        worker_id,
+        state.deps.event_tx.clone(),
+        state.deps.agent_id.clone(),
+        Some(state.channel_id.clone()),
+        worker.run(),
+    );
+
     {
         let mut status = state.status_block.write().await;
         status.add_worker(worker_id, &task, false);
@@ -777,48 +751,57 @@ pub async fn spawn_opencode_worker_from_state(
 
     let worker_id = worker.id;
 
-    // Spawn the OpenCode worker as a tokio task
-    let deps_event_tx = state.deps.event_tx.clone();
-    let agent_id = state.deps.agent_id.clone();
-    let channel_id = Some(state.channel_id.clone());
-    let task_description = task.clone();
-    tokio::spawn(async move {
-        let result = worker.run().await;
-        match result {
-            Ok(opencode_result) => {
-                let _ = deps_event_tx.send(ProcessEvent::WorkerComplete {
-                    agent_id,
-                    worker_id,
-                    channel_id,
-                    result: opencode_result.result_text,
-                    notify: true,
-                });
-            }
-            Err(error) => {
-                tracing::error!(worker_id = %worker_id, %error, "OpenCode worker failed");
-                let _ = deps_event_tx.send(ProcessEvent::WorkerComplete {
-                    agent_id,
-                    worker_id,
-                    channel_id,
-                    result: format!("OpenCode worker failed: {error}"),
-                    notify: true,
-                });
-            }
-        }
-    });
+    spawn_worker_task(
+        worker_id,
+        state.deps.event_tx.clone(),
+        state.deps.agent_id.clone(),
+        Some(state.channel_id.clone()),
+        async move {
+            let result = worker.run().await?;
+            Ok::<String, anyhow::Error>(result.result_text)
+        },
+    );
 
     {
         let mut status = state.status_block.write().await;
-        status.add_worker(worker_id, &format!("[opencode] {task_description}"), false);
+        status.add_worker(worker_id, &format!("[opencode] {task}"), false);
     }
 
-    tracing::info!(
-        worker_id = %worker_id,
-        task = %task_description,
-        "OpenCode worker spawned"
-    );
+    tracing::info!(worker_id = %worker_id, task = %task, "OpenCode worker spawned");
 
     Ok(worker_id)
+}
+
+/// Spawn a future as a tokio task that sends a `WorkerComplete` event on completion.
+///
+/// Handles both success and error cases, logging failures and sending the
+/// appropriate event. Used by both builtin workers and OpenCode workers.
+fn spawn_worker_task<F, E>(
+    worker_id: WorkerId,
+    event_tx: broadcast::Sender<ProcessEvent>,
+    agent_id: crate::AgentId,
+    channel_id: Option<ChannelId>,
+    future: F,
+) where
+    F: std::future::Future<Output = std::result::Result<String, E>> + Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    tokio::spawn(async move {
+        let (result_text, notify) = match future.await {
+            Ok(text) => (text, true),
+            Err(error) => {
+                tracing::error!(worker_id = %worker_id, %error, "worker failed");
+                (format!("Worker failed: {error}"), true)
+            }
+        };
+        let _ = event_tx.send(ProcessEvent::WorkerComplete {
+            agent_id,
+            worker_id,
+            channel_id,
+            result: result_text,
+            notify,
+        });
+    });
 }
 
 /// Build a dynamic description of worker tool capabilities based on runtime config.
@@ -934,84 +917,97 @@ async fn download_attachments(
         let is_image = IMAGE_MIME_PREFIXES.iter().any(|p| attachment.mime_type.starts_with(p));
         let is_text = TEXT_MIME_PREFIXES.iter().any(|p| attachment.mime_type.starts_with(p));
 
-        if is_image {
-            match http.get(&attachment.url).send().await {
-                Ok(response) => {
-                    match response.bytes().await {
-                        Ok(bytes) => {
-                            use base64::Engine as _;
-                            let base64_data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                            let media_type = ImageMediaType::from_mime_type(&attachment.mime_type);
-                            parts.push(UserContent::image_base64(base64_data, media_type, None));
-                            tracing::info!(
-                                filename = %attachment.filename,
-                                mime = %attachment.mime_type,
-                                size = bytes.len(),
-                                "downloaded image attachment"
-                            );
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, filename = %attachment.filename, "failed to read attachment bytes");
-                            parts.push(UserContent::text(format!(
-                                "[Failed to download image: {}]", attachment.filename
-                            )));
-                        }
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, filename = %attachment.filename, "failed to download attachment");
-                    parts.push(UserContent::text(format!(
-                        "[Failed to download image: {}]", attachment.filename
-                    )));
-                }
-            }
+        let content = if is_image {
+            download_image_attachment(http, attachment).await
         } else if is_text {
-            match http.get(&attachment.url).send().await {
-                Ok(response) => {
-                    match response.text().await {
-                        Ok(content) => {
-                            // Truncate very large files to avoid blowing up context
-                            let truncated = if content.len() > 50_000 {
-                                format!("{}...\n[truncated — {} bytes total]", &content[..50_000], content.len())
-                            } else {
-                                content
-                            };
-                            parts.push(UserContent::text(format!(
-                                "<file name=\"{}\" mime=\"{}\">\n{}\n</file>",
-                                attachment.filename, attachment.mime_type, truncated
-                            )));
-                            tracing::info!(
-                                filename = %attachment.filename,
-                                mime = %attachment.mime_type,
-                                "downloaded text attachment"
-                            );
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, filename = %attachment.filename, "failed to read text attachment");
-                            parts.push(UserContent::text(format!(
-                                "[Failed to read file: {}]", attachment.filename
-                            )));
-                        }
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(%error, filename = %attachment.filename, "failed to download text attachment");
-                    parts.push(UserContent::text(format!(
-                        "[Failed to download file: {}]", attachment.filename
-                    )));
-                }
-            }
+            download_text_attachment(http, attachment).await
         } else {
-            // Unknown file type — just describe it
             let size_str = attachment.size_bytes
                 .map(|s| format!("{:.1} KB", s as f64 / 1024.0))
                 .unwrap_or_else(|| "unknown size".into());
-            parts.push(UserContent::text(format!(
+            UserContent::text(format!(
                 "[Attachment: {} ({}, {})]",
                 attachment.filename, attachment.mime_type, size_str
-            )));
-        }
+            ))
+        };
+
+        parts.push(content);
     }
 
     parts
+}
+
+/// Download an image attachment and encode it as base64 for the LLM.
+async fn download_image_attachment(
+    http: &reqwest::Client,
+    attachment: &crate::Attachment,
+) -> UserContent {
+    let response = match http.get(&attachment.url).send().await {
+        Ok(r) => r,
+        Err(error) => {
+            tracing::warn!(%error, filename = %attachment.filename, "failed to download image");
+            return UserContent::text(format!("[Failed to download image: {}]", attachment.filename));
+        }
+    };
+
+    let bytes = match response.bytes().await {
+        Ok(b) => b,
+        Err(error) => {
+            tracing::warn!(%error, filename = %attachment.filename, "failed to read image bytes");
+            return UserContent::text(format!("[Failed to download image: {}]", attachment.filename));
+        }
+    };
+
+    use base64::Engine as _;
+    let base64_data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let media_type = ImageMediaType::from_mime_type(&attachment.mime_type);
+
+    tracing::info!(
+        filename = %attachment.filename,
+        mime = %attachment.mime_type,
+        size = bytes.len(),
+        "downloaded image attachment"
+    );
+
+    UserContent::image_base64(base64_data, media_type, None)
+}
+
+/// Download a text attachment and inline its content for the LLM.
+async fn download_text_attachment(
+    http: &reqwest::Client,
+    attachment: &crate::Attachment,
+) -> UserContent {
+    let response = match http.get(&attachment.url).send().await {
+        Ok(r) => r,
+        Err(error) => {
+            tracing::warn!(%error, filename = %attachment.filename, "failed to download text file");
+            return UserContent::text(format!("[Failed to download file: {}]", attachment.filename));
+        }
+    };
+
+    let content = match response.text().await {
+        Ok(c) => c,
+        Err(error) => {
+            tracing::warn!(%error, filename = %attachment.filename, "failed to read text file");
+            return UserContent::text(format!("[Failed to read file: {}]", attachment.filename));
+        }
+    };
+
+    // Truncate very large files to avoid blowing up context
+    let truncated = if content.len() > 50_000 {
+        format!("{}...\n[truncated — {} bytes total]", &content[..50_000], content.len())
+    } else {
+        content
+    };
+
+    tracing::info!(
+        filename = %attachment.filename,
+        mime = %attachment.mime_type,
+        "downloaded text attachment"
+    );
+
+    UserContent::text(format!(
+        "<file name=\"{}\" mime=\"{}\">\n{}\n</file>",
+        attachment.filename, attachment.mime_type, truncated
+    ))
 }

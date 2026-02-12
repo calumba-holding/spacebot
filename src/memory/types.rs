@@ -83,6 +83,7 @@ impl MemoryType {
             MemoryType::Event => 0.4,
             MemoryType::Observation => 0.3,
             MemoryType::Goal => 0.9,
+            MemoryType::Todo => 0.8,
         }
     }
 }
@@ -105,6 +106,8 @@ pub enum MemoryType {
     Observation,
     /// Something the user or agent wants to achieve.
     Goal,
+    /// An actionable task or reminder.
+    Todo,
 }
 
 impl MemoryType {
@@ -117,6 +120,7 @@ impl MemoryType {
         MemoryType::Event,
         MemoryType::Observation,
         MemoryType::Goal,
+        MemoryType::Todo,
     ];
 }
 
@@ -130,6 +134,7 @@ impl std::fmt::Display for MemoryType {
             MemoryType::Event => write!(f, "event"),
             MemoryType::Observation => write!(f, "observation"),
             MemoryType::Goal => write!(f, "goal"),
+            MemoryType::Todo => write!(f, "todo"),
         }
     }
 }
