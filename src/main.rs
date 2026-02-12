@@ -129,9 +129,6 @@ async fn main() -> anyhow::Result<()> {
         // Per-agent event bus (broadcast for fan-out to multiple channels)
         let (event_tx, _event_rx) = tokio::sync::broadcast::channel(256);
 
-        // Per-agent channel tool server (starts empty, tools added per turn)
-        let tool_server = spacebot::tools::create_channel_tool_server();
-
         let agent_id: spacebot::AgentId = Arc::from(agent_config.id.as_str());
 
         // Scaffold identity templates if missing, then load
@@ -171,7 +168,7 @@ async fn main() -> anyhow::Result<()> {
             agent_id: agent_id.clone(),
             memory_search,
             llm_manager: llm_manager.clone(),
-            tool_server,
+            heartbeat_tool: None,
             runtime_config,
             event_tx,
             sqlite_pool: db.sqlite.clone(),
@@ -221,7 +218,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize heartbeat schedulers for each agent
     let mut heartbeat_schedulers = Vec::new();
-    for (agent_id, agent) in &agents {
+    for (agent_id, agent) in &mut agents {
         let store = Arc::new(spacebot::heartbeat::HeartbeatStore::new(agent.db.sqlite.clone()));
 
         // Seed heartbeats from config into the database
@@ -271,11 +268,9 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        // Register the heartbeat management tool on the agent's shared tool server
+        // Store heartbeat tool on deps so each channel can register it on its own tool server
         let heartbeat_tool = spacebot::tools::HeartbeatTool::new(store, scheduler.clone());
-        if let Err(error) = agent.deps.tool_server.add_tool(heartbeat_tool).await {
-            tracing::warn!(agent_id = %agent_id, %error, "failed to register heartbeat tool");
-        }
+        agent.deps.heartbeat_tool = Some(heartbeat_tool);
 
         heartbeat_schedulers.push(scheduler);
         tracing::info!(agent_id = %agent_id, "heartbeat scheduler started");

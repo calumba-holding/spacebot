@@ -148,7 +148,7 @@ pub struct AgentDeps {
     pub agent_id: AgentId,
     pub memory_search: Arc<memory::MemorySearch>,
     pub llm_manager: Arc<llm::LlmManager>,
-    pub tool_server: rig::tool::server::ToolServerHandle,
+    pub heartbeat_tool: Option<tools::HeartbeatTool>,
     pub runtime_config: Arc<config::RuntimeConfig>,
     pub event_tx: tokio::sync::broadcast::Sender<ProcessEvent>,
     pub sqlite_pool: sqlx::SqlitePool,

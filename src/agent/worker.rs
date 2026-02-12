@@ -1,8 +1,9 @@
 //! Worker: Independent task execution process.
 
-use crate::agent::compactor::{estimate_history_tokens, CompactionAction};
+use crate::agent::compactor::estimate_history_tokens;
 use crate::config::BrowserConfig;
 use crate::error::Result;
+use crate::llm::routing::is_context_overflow_error;
 use crate::llm::SpacebotModel;
 use crate::{WorkerId, ChannelId, ProcessId, ProcessType, AgentDeps};
 use crate::hooks::SpacebotHook;
@@ -15,6 +16,10 @@ use uuid::Uuid;
 
 /// How many turns per segment before we check context and potentially compact.
 const TURNS_PER_SEGMENT: usize = 25;
+
+/// Max consecutive context overflow recoveries before giving up.
+/// Prevents infinite compact-retry loops if something is fundamentally wrong.
+const MAX_OVERFLOW_RETRIES: usize = 3;
 
 /// Worker state machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,6 +197,7 @@ impl Worker {
         // Run the initial task in segments with compaction checkpoints
         let mut prompt = self.task.clone();
         let mut segments_run = 0;
+        let mut overflow_retries = 0;
 
         let result = loop {
             segments_run += 1;
@@ -202,14 +208,11 @@ impl Worker {
                 .await
             {
                 Ok(response) => {
-                    // LLM produced final text — task is done
                     break response;
                 }
                 Err(rig::completion::PromptError::MaxTurnsError { .. }) => {
-                    // Hit turn limit for this segment — compact and continue
+                    overflow_retries = 0;
                     self.maybe_compact_history(&mut history).await;
-
-                    // Continue with a follow-up prompt
                     prompt = "Continue where you left off. Do not repeat completed work.".into();
                     self.hook.send_status(&format!("working (segment {segments_run})"));
 
@@ -226,6 +229,28 @@ impl Worker {
                     self.write_failure_log(&history, &format!("cancelled: {reason}"));
                     tracing::info!(worker_id = %self.id, %reason, "worker cancelled");
                     return Ok(format!("Worker cancelled: {reason}"));
+                }
+                Err(error) if is_context_overflow_error(&error.to_string()) => {
+                    overflow_retries += 1;
+                    if overflow_retries > MAX_OVERFLOW_RETRIES {
+                        self.state = WorkerState::Failed;
+                        self.hook.send_status("failed");
+                        self.write_failure_log(&history, &format!("context overflow after {MAX_OVERFLOW_RETRIES} compaction attempts: {error}"));
+                        tracing::error!(worker_id = %self.id, %error, "worker context overflow unrecoverable");
+                        return Err(crate::error::AgentError::Other(error.into()).into());
+                    }
+
+                    tracing::warn!(
+                        worker_id = %self.id,
+                        attempt = overflow_retries,
+                        %error,
+                        "context overflow, compacting and retrying"
+                    );
+                    self.hook.send_status("compacting (overflow recovery)");
+                    self.force_compact_history(&mut history).await;
+                    prompt = "Continue where you left off. Do not repeat completed work. \
+                              Your previous attempt exceeded the context limit, so older history \
+                              has been compacted.".into();
                 }
                 Err(error) => {
                     self.state = WorkerState::Failed;
@@ -249,22 +274,51 @@ impl Worker {
                 // Compact before follow-up if needed
                 self.maybe_compact_history(&mut history).await;
 
-                match agent.prompt(&follow_up)
-                    .with_history(&mut history)
-                    .with_hook(self.hook.clone())
-                    .await
-                {
-                    Ok(_response) => {
-                        self.state = WorkerState::WaitingForInput;
-                        self.hook.send_status("waiting for input");
+                let mut follow_up_prompt = follow_up.clone();
+                let mut follow_up_overflow_retries = 0;
+
+                let follow_up_ok = loop {
+                    match agent.prompt(&follow_up_prompt)
+                        .with_history(&mut history)
+                        .with_hook(self.hook.clone())
+                        .await
+                    {
+                        Ok(_response) => break true,
+                        Err(error) if is_context_overflow_error(&error.to_string()) => {
+                            follow_up_overflow_retries += 1;
+                            if follow_up_overflow_retries > MAX_OVERFLOW_RETRIES {
+                                self.write_failure_log(&history, &format!("follow-up context overflow after {MAX_OVERFLOW_RETRIES} compaction attempts: {error}"));
+                                tracing::error!(worker_id = %self.id, %error, "follow-up context overflow unrecoverable");
+                                break false;
+                            }
+                            tracing::warn!(
+                                worker_id = %self.id,
+                                attempt = follow_up_overflow_retries,
+                                %error,
+                                "follow-up context overflow, compacting and retrying"
+                            );
+                            self.hook.send_status("compacting (overflow recovery)");
+                            self.force_compact_history(&mut history).await;
+                            follow_up_prompt = format!(
+                                "{follow_up}\n\n[System: Previous attempt exceeded context limit. \
+                                 Older history has been compacted.]"
+                            );
+                        }
+                        Err(error) => {
+                            self.write_failure_log(&history, &format!("follow-up failed: {error}"));
+                            tracing::error!(worker_id = %self.id, %error, "worker follow-up failed");
+                            break false;
+                        }
                     }
-                    Err(error) => {
-                        self.write_failure_log(&history, &format!("follow-up failed: {error}"));
-                        tracing::error!(worker_id = %self.id, %error, "worker follow-up failed");
-                        self.state = WorkerState::Failed;
-                        self.hook.send_status("failed");
-                        break;
-                    }
+                };
+
+                if follow_up_ok {
+                    self.state = WorkerState::WaitingForInput;
+                    self.hook.send_status("waiting for input");
+                } else {
+                    self.state = WorkerState::Failed;
+                    self.hook.send_status("failed");
+                    break;
                 }
             }
         }
@@ -290,16 +344,37 @@ impl Worker {
             return;
         }
 
+        self.compact_history(history, 0.50, "worker history compacted").await;
+    }
+
+    /// Aggressive compaction for context overflow recovery.
+    ///
+    /// Unlike `maybe_compact_history`, this always fires regardless of current
+    /// usage and removes 75% of messages. Used when the provider has already
+    /// rejected the request for exceeding context limits.
+    async fn force_compact_history(&self, history: &mut Vec<rig::message::Message>) {
+        self.compact_history(history, 0.75, "worker history force-compacted (overflow recovery)").await;
+    }
+
+    /// Compact worker history by removing a fraction of the oldest messages.
+    async fn compact_history(
+        &self,
+        history: &mut Vec<rig::message::Message>,
+        fraction: f32,
+        log_message: &str,
+    ) {
         let total = history.len();
         if total <= 4 {
             return;
         }
 
-        // Remove the oldest 50% of messages and replace with a summary marker
-        let remove_count = total / 2;
+        let context_window = **self.deps.runtime_config.context_window.load();
+        let estimated = estimate_history_tokens(history);
+        let usage = estimated as f32 / context_window as f32;
+
+        let remove_count = ((total as f32 * fraction) as usize).max(1).min(total.saturating_sub(2));
         let removed: Vec<rig::message::Message> = history.drain(..remove_count).collect();
 
-        // Build a brief recap of what was removed
         let recap = build_worker_recap(&removed);
         let marker = format!(
             "[System: Earlier work has been summarized to free up context. \
@@ -312,7 +387,7 @@ impl Worker {
             removed = remove_count,
             remaining = history.len(),
             usage = %format!("{:.0}%", usage * 100.0),
-            "worker history compacted"
+            "{log_message}"
         );
     }
     

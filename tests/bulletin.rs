@@ -72,7 +72,6 @@ async fn bootstrap_deps() -> anyhow::Result<spacebot::AgentDeps> {
     ));
 
     let (event_tx, _) = tokio::sync::broadcast::channel(16);
-    let tool_server = spacebot::tools::create_channel_tool_server();
 
     let agent_id: spacebot::AgentId = Arc::from(agent_config.id.as_str());
 
@@ -80,7 +79,7 @@ async fn bootstrap_deps() -> anyhow::Result<spacebot::AgentDeps> {
         agent_id,
         memory_search,
         llm_manager,
-        tool_server,
+        heartbeat_tool: None,
         runtime_config,
         event_tx,
         sqlite_pool: db.sqlite.clone(),

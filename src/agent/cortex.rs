@@ -185,9 +185,9 @@ pub async fn generate_bulletin(deps: &AgentDeps) -> bool {
 
     let user_prompt = format!(
         "Generate a memory bulletin for the agent. Target length: {} words or fewer. \
-         Use memory_recall to search across multiple dimensions — identity, recent events, \
-         decisions, preferences, and important context. Make at least 3-4 separate queries \
-         to build a complete picture, then synthesize into a concise briefing.",
+         Make one memory_recall call per memory type using the memory_type filter parameter: \
+         identity, fact, decision, event, preference, observation. That's 6 queries total, \
+         one per turn. Then synthesize into a concise briefing.",
         cortex_config.bulletin_max_words
     );
 

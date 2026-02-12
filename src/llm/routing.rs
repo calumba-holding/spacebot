@@ -96,5 +96,22 @@ pub fn is_retriable_error(error_message: &str) -> bool {
         || error_message.contains("connection")
 }
 
+/// Whether a completion error indicates context window overflow.
+///
+/// Providers return 400 with various phrasings when the request exceeds
+/// the model's context limit. Checking for these lets workers compact
+/// and retry instead of dying.
+pub fn is_context_overflow_error(error_message: &str) -> bool {
+    let lower = error_message.to_lowercase();
+    lower.contains("context length")
+        || lower.contains("maximum context")
+        || lower.contains("token limit")
+        || lower.contains("too many tokens")
+        || lower.contains("request too large")
+        || lower.contains("content_too_large")
+        || lower.contains("max_tokens")
+        || (lower.contains("maximum") && lower.contains("tokens"))
+}
+
 /// Max number of fallback attempts before giving up.
 pub const MAX_FALLBACK_ATTEMPTS: usize = 3;

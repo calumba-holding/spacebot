@@ -65,28 +65,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
-/// Create the ToolServer for a channel.
+/// Add per-turn tools to a channel's ToolServer.
 ///
-/// Starts empty. Channel-specific tools (reply, branch, spawn_worker, route,
-/// cancel, skip, react) are added per conversation turn. Memory tools live on
-/// branch and cortex servers only — the channel delegates memory work.
-pub fn create_channel_tool_server() -> ToolServerHandle {
-    ToolServer::new()
-        .run()
-}
-
-/// Add per-channel tools to a running ToolServer.
-///
-/// Called when a conversation turn begins. These tools hold per-channel state
-/// (channel history, active branches/workers, response sender) that can't be
-/// known at agent startup. Cleaned up via `remove_channel_tools()` when the
-/// turn ends.
+/// Called when a conversation turn begins. These tools hold per-turn state
+/// (response sender, skip flag) that changes between turns. Cleaned up via
+/// `remove_channel_tools()` when the turn ends.
 pub async fn add_channel_tools(
     handle: &ToolServerHandle,
     state: ChannelState,
     response_tx: mpsc::Sender<OutboundResponse>,
     conversation_id: impl Into<String>,
     skip_flag: SkipFlag,
+    heartbeat_tool: Option<HeartbeatTool>,
 ) -> Result<(), rig::tool::server::ToolServerError> {
     handle.add_tool(ReplyTool::new(
         response_tx.clone(),
@@ -100,6 +90,9 @@ pub async fn add_channel_tools(
     handle.add_tool(CancelTool::new(state)).await?;
     handle.add_tool(SkipTool::new(skip_flag, response_tx.clone())).await?;
     handle.add_tool(ReactTool::new(response_tx)).await?;
+    if let Some(heartbeat) = heartbeat_tool {
+        handle.add_tool(heartbeat).await?;
+    }
     Ok(())
 }
 
@@ -117,6 +110,8 @@ pub async fn remove_channel_tools(
     handle.remove_tool(CancelTool::NAME).await?;
     handle.remove_tool(SkipTool::NAME).await?;
     handle.remove_tool(ReactTool::NAME).await?;
+    // Heartbeat tool removal is best-effort since not all channels have it
+    let _ = handle.remove_tool(HeartbeatTool::NAME).await;
     Ok(())
 }
 

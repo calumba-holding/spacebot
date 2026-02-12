@@ -13,6 +13,7 @@ use rig::agent::AgentBuilder;
 use rig::completion::{CompletionModel, Prompt};
 use rig::message::{ImageMediaType, MimeType, UserContent};
 use rig::one_or_many::OneOrMany;
+use rig::tool::server::ToolServer;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
@@ -54,6 +55,8 @@ pub struct Channel {
     pub deps: AgentDeps,
     pub hook: SpacebotHook,
     pub state: ChannelState,
+    /// Per-channel tool server (isolated from other channels).
+    pub tool_server: rig::tool::server::ToolServerHandle,
     /// Input channel for receiving messages.
     pub message_rx: mpsc::Receiver<InboundMessage>,
     /// Event receiver for process events.
@@ -118,6 +121,10 @@ impl Channel {
             logs_dir,
         };
 
+        // Each channel gets its own isolated tool server to avoid races between
+        // concurrent channels sharing per-turn add/remove cycles.
+        let tool_server = ToolServer::new().run();
+
         let self_tx = message_tx.clone();
         let channel = Self {
             id: id.clone(),
@@ -125,6 +132,7 @@ impl Channel {
             deps,
             hook,
             state,
+            tool_server,
             message_rx,
             event_rx,
             response_tx,
@@ -265,11 +273,12 @@ impl Channel {
         let conversation_id = message.conversation_id.clone();
         let skip_flag = crate::tools::new_skip_flag();
         if let Err(error) = crate::tools::add_channel_tools(
-            &self.deps.tool_server,
+            &self.tool_server,
             self.state.clone(),
             self.response_tx.clone(),
             &conversation_id,
             skip_flag.clone(),
+            self.deps.heartbeat_tool.clone(),
         ).await {
             tracing::error!(%error, "failed to add channel tools");
             return Err(AgentError::Other(error.into()).into());
@@ -285,7 +294,7 @@ impl Channel {
         let agent = AgentBuilder::new(model)
             .preamble(&system_prompt)
             .default_max_turns(max_turns)
-            .tool_server_handle(self.deps.tool_server.clone())
+            .tool_server_handle(self.tool_server.clone())
             .build();
 
         // Signal typing indicator while the LLM processes
@@ -322,7 +331,7 @@ impl Channel {
         }
 
         // Clean up per-turn tools
-        if let Err(error) = crate::tools::remove_channel_tools(&self.deps.tool_server).await {
+        if let Err(error) = crate::tools::remove_channel_tools(&self.tool_server).await {
             tracing::warn!(%error, "failed to remove channel tools");
         }
 
