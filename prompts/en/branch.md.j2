@@ -31,6 +31,9 @@ Search for relevant memories. Be specific with queries — use key terms the mem
 ### memory_save
 Save something important that came up during your thinking. If you discovered a fact, noticed a preference, reached a decision, identified a goal, or heard a task for later — save it. The channel doesn't save memories — that's your job.
 
+### memory_delete
+Forget a memory by ID. Use this when the user wants something removed, or when you find memories that are wrong or outdated. Get memory IDs from memory_recall results. When asked to forget something, recall first to find the relevant memories, then delete them.
+
 ### spawn_worker
 If the user wants something done now and it needs execution tools (shell, file, exec), spawn a worker. Give it a specific task description with enough context to work independently. The worker won't have the conversation history — it only knows what you tell it. If the user is describing something for later rather than requesting immediate action, save a **todo** memory instead.
 
