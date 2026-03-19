@@ -898,7 +898,7 @@ impl Cortex {
         self.observe_health_event(&event).await;
 
         // Bump knowledge synthesis version on memory content changes.
-        if matches!(event, ProcessEvent::MemorySaved { .. }) {
+        if matches!(&event, ProcessEvent::MemorySaved { .. }) {
             self.deps.runtime_config.bump_knowledge_synthesis_version();
         }
 
@@ -2886,25 +2886,22 @@ pub async fn maybe_synthesize_daily_summary(
     }
 
     let intraday = wm.get_intraday_syntheses(&yesterday).await?;
+    let raw_events = wm.get_events_for_day(&yesterday).await?;
 
-    // If no intra-day syntheses exist, check for raw events.
-    if intraday.is_empty() {
-        let events = wm.get_events_for_day(&yesterday).await?;
-        if events.is_empty() {
-            // No activity at all — save a minimal summary.
-            wm.save_daily_summary(&yesterday, "No activity.", 0).await?;
-            return Ok(true);
-        }
-        // Events exist but no synthesis yet — skip for now, the intra-day
-        // synthesis will eventually process them. Once they're synthesized,
-        // this function will pick up the paragraphs on the next tick.
-        return Ok(false);
+    // No activity at all — save a minimal summary.
+    if intraday.is_empty() && raw_events.is_empty() {
+        wm.save_daily_summary(&yesterday, "No activity.", 0).await?;
+        return Ok(true);
     }
 
-    // Build input from intra-day synthesis paragraphs.
+    // Build input from intra-day synthesis paragraphs + any unsynthesized tail.
     let timezone = wm.timezone();
     let mut blocks_text = String::new();
     let mut total_events = 0i64;
+
+    // Last timestamp covered by intra-day syntheses (if any).
+    let mut last_synthesis_end = None;
+
     for synthesis in &intraday {
         let time_label = synthesis
             .time_range_start
@@ -2913,6 +2910,44 @@ pub async fn maybe_synthesize_daily_summary(
             .to_string();
         blocks_text.push_str(&format!("[{time_label}] {}\n\n", synthesis.summary));
         total_events += synthesis.event_count;
+        let end = synthesis.time_range_end;
+        last_synthesis_end = Some(
+            last_synthesis_end.map_or(end, |prev: chrono::DateTime<chrono::Utc>| prev.max(end)),
+        );
+    }
+
+    // Collect raw events not covered by any intra-day synthesis (the "tail").
+    // This happens when events didn't hit the count/time trigger before midnight.
+    let tail_events: Vec<_> = raw_events
+        .iter()
+        .filter(|event| match last_synthesis_end {
+            Some(end) => event.timestamp > end,
+            None => true, // No syntheses at all — all events are unsynthesized.
+        })
+        .collect();
+
+    if !tail_events.is_empty() {
+        if !blocks_text.is_empty() {
+            blocks_text.push_str("Unsynthesized events from the rest of the day:\n");
+        }
+        for event in &tail_events {
+            let ts = event
+                .timestamp
+                .with_timezone(&timezone)
+                .format("%H:%M")
+                .to_string();
+            let channel_label = event
+                .channel_id
+                .as_deref()
+                .map(|c| format!(" [{c}]"))
+                .unwrap_or_default();
+            blocks_text.push_str(&format!(
+                "[{ts}]{channel_label} {}: {}\n",
+                event.event_type, event.summary
+            ));
+        }
+        blocks_text.push('\n');
+        total_events += tail_events.len() as i64;
     }
 
     let wm_config = **deps.runtime_config.working_memory.load();
@@ -2940,9 +2975,12 @@ pub async fn maybe_synthesize_daily_summary(
     wm.save_daily_summary(&yesterday, &summary, total_events)
         .await?;
 
+    let tail_count = tail_events.len();
+
     tracing::info!(
         day = yesterday,
         intraday_blocks = intraday.len(),
+        tail_events = tail_count,
         total_events,
         words = summary.split_whitespace().count(),
         "daily summary generated"
@@ -2951,12 +2989,13 @@ pub async fn maybe_synthesize_daily_summary(
     logger.log(
         "daily_summary",
         &format!(
-            "Daily summary for {yesterday}: {total_events} events, {} blocks",
+            "Daily summary for {yesterday}: {total_events} events, {} blocks, {tail_count} tail",
             intraday.len()
         ),
         Some(serde_json::json!({
             "day": yesterday,
             "intraday_blocks": intraday.len(),
+            "tail_events": tail_count,
             "total_events": total_events,
             "words": summary.split_whitespace().count(),
         })),

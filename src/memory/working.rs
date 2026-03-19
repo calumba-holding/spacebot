@@ -733,7 +733,8 @@ pub async fn render_channel_activity_map(
         if let Some(topic_summary) = topic {
             // Truncate topic to keep the map compact.
             let truncated = if topic_summary.len() > 80 {
-                format!("{}...", &topic_summary[..80])
+                let boundary = topic_summary.floor_char_boundary(80);
+                format!("{}...", &topic_summary[..boundary])
             } else {
                 topic_summary.clone()
             };
