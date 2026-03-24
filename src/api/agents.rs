@@ -371,8 +371,6 @@ pub(super) async fn trigger_warmup(
     let mcp_managers = state.mcp_managers.load();
     let pools = state.agent_pools.load();
     let sandboxes = state.sandboxes.load();
-    let task_stores = state.task_stores.load();
-
     let runtime_config_ids = runtime_configs.keys().cloned().collect::<HashSet<_>>();
     let memory_search_ids = memory_searches.keys().cloned().collect::<HashSet<_>>();
     let mcp_manager_ids = mcp_managers.keys().cloned().collect::<HashSet<_>>();
@@ -402,15 +400,17 @@ pub(super) async fn trigger_warmup(
         let Some(sandbox) = sandboxes.get(agent_id).cloned() else {
             continue;
         };
-        let task_store = task_stores
-            .get(agent_id)
-            .cloned()
-            .unwrap_or_else(|| Arc::new(crate::tasks::TaskStore::new(sqlite_pool.clone())));
+        let Some(task_store) = state.task_store.load().as_ref().clone() else {
+            tracing::warn!(
+                agent_id,
+                "global task store not initialized, skipping warmup"
+            );
+            continue;
+        };
 
         let llm_manager = llm_manager.clone();
         let force = request.force;
         let agent_id = agent_id.clone();
-        let task_store_registry = state.task_store_registry.clone();
         let injection_tx = state.injection_tx.clone();
         let humans = (**state.agent_humans.load()).clone();
         tokio::spawn(async move {
@@ -443,7 +443,6 @@ pub(super) async fn trigger_warmup(
                 links: Arc::new(arc_swap::ArcSwap::from_pointee(Vec::new())),
                 agent_names: Arc::new(std::collections::HashMap::new()),
                 humans: Arc::new(arc_swap::ArcSwap::from_pointee(humans)),
-                task_store_registry,
                 process_control_registry: Arc::new(
                     crate::agent::process_control::ProcessControlRegistry::new(),
                 ),
@@ -528,6 +527,18 @@ pub async fn create_agent_internal(
     // Acquire the config write mutex to prevent concurrent read-modify-write races.
     let _config_guard = state.config_write_mutex.lock().await;
 
+    // Fail early if messaging manager is unavailable — before any config write,
+    // directory creation, or database init that would leave a half-created agent.
+    let messaging_manager = {
+        let guard = state.messaging_manager.read().await;
+        guard
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| {
+                "Messaging manager not initialized. Please ensure messaging adapters are configured before creating agents.".to_string()
+            })?
+    };
+
     let content = if config_path.exists() {
         tokio::fs::read_to_string(&config_path)
             .await
@@ -549,6 +560,19 @@ pub async fn create_agent_internal(
     let agents_array = doc["agents"]
         .as_array_of_tables_mut()
         .ok_or_else(|| "agents is not an array of tables in config.toml".to_string())?;
+
+    // Revalidate uniqueness under the lock — another request may have written the
+    // same agent_id to config.toml between our first check and mutex acquisition.
+    // Check against the parsed TOML document (agents_array) rather than the stale
+    // in-memory cache to ensure we catch concurrent writes.
+    if agents_array.iter().any(|t| {
+        t.get("id")
+            .and_then(|v| v.as_str())
+            .map(|id| id == agent_id)
+            .unwrap_or(false)
+    }) {
+        return Err(format!("Agent '{agent_id}' already exists"));
+    }
 
     let mut new_table = toml_edit::Table::new();
     new_table["id"] = toml_edit::value(&agent_id);
@@ -693,7 +717,12 @@ pub async fn create_agent_internal(
         embedding_table,
         embedding_model,
     ));
-    let task_store = std::sync::Arc::new(crate::tasks::TaskStore::new(db.sqlite.clone()));
+    let task_store = state
+        .task_store
+        .load()
+        .as_ref()
+        .clone()
+        .ok_or_else(|| "global task store not initialized".to_string())?;
 
     let (event_tx, memory_event_tx) = crate::create_process_event_buses();
     let arc_agent_id: crate::AgentId = std::sync::Arc::from(agent_id.as_str());
@@ -786,15 +815,11 @@ pub async fn create_agent_internal(
         event_tx: event_tx.clone(),
         memory_event_tx: memory_event_tx.clone(),
         sqlite_pool: db.sqlite.clone(),
-        messaging_manager: {
-            let guard = state.messaging_manager.read().await;
-            guard.as_ref().cloned()
-        },
+        messaging_manager: Some(messaging_manager.clone()),
         sandbox: sandbox.clone(),
         links: Arc::new(arc_swap::ArcSwap::from_pointee(
             (**state.agent_links.load()).clone(),
         )),
-        task_store_registry: state.task_store_registry.clone(),
         process_control_registry: Arc::new(
             crate::agent::process_control::ProcessControlRegistry::new(),
         ),
@@ -841,19 +866,14 @@ pub async fn create_agent_internal(
         deps: deps.clone(),
         screenshot_dir: agent_config.screenshot_dir(),
         logs_dir: agent_config.logs_dir(),
-        messaging_manager: {
-            let guard = state.messaging_manager.read().await;
-            guard
-                .as_ref()
-                .cloned()
-                .unwrap_or_else(|| std::sync::Arc::new(crate::messaging::MessagingManager::new()))
-        },
+        messaging_manager: messaging_manager.clone(),
         store: cron_store.clone(),
     };
     let scheduler = std::sync::Arc::new(crate::cron::Scheduler::new(cron_context));
     runtime_config.set_cron(cron_store.clone(), scheduler.clone());
 
-    let cron_tool = crate::tools::CronTool::new(cron_store.clone(), scheduler.clone());
+    let cron_tool =
+        crate::tools::CronTool::new(cron_store.clone(), scheduler.clone(), messaging_manager);
 
     let browser_config = (**runtime_config.browser_config.load()).clone();
     let brave_search_key = (**runtime_config.brave_search_key.load()).clone();
@@ -933,16 +953,6 @@ pub async fn create_agent_internal(
         let mut searches = (**state.memory_searches.load()).clone();
         searches.insert(agent_id.clone(), memory_search);
         state.memory_searches.store(std::sync::Arc::new(searches));
-
-        let mut task_stores = (**state.task_stores.load()).clone();
-        task_stores.insert(agent_id.clone(), task_store.clone());
-        state.task_stores.store(std::sync::Arc::new(task_stores));
-
-        let mut registry = (**state.task_store_registry.load()).clone();
-        registry.insert(agent_id.clone(), task_store);
-        state
-            .task_store_registry
-            .store(std::sync::Arc::new(registry));
 
         let mut workspaces = (**state.agent_workspaces.load()).clone();
         workspaces.insert(agent_id.clone(), agent_config.workspace.clone());
@@ -1679,15 +1689,11 @@ mod tests {
         let (agent_remove_tx, _agent_remove_rx) = tokio::sync::mpsc::channel(1);
 
         let (injection_tx, _injection_rx) = tokio::sync::mpsc::channel(1);
-        let task_store_registry = Arc::new(arc_swap::ArcSwap::from_pointee(
-            std::collections::HashMap::new(),
-        ));
         Arc::new(ApiState::new_with_provider_sender(
             provider_setup_tx,
             agent_tx,
             agent_remove_tx,
             injection_tx,
-            task_store_registry,
         ))
     }
 
