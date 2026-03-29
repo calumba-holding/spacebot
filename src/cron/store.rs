@@ -116,6 +116,7 @@ fn row_to_cron_execution_entry(row: SqliteRow) -> CronExecutionEntry {
 
     CronExecutionEntry {
         id: row.try_get("id").unwrap_or_default(),
+        cron_id: row.try_get::<Option<String>, _>("cron_id").ok().flatten(),
         executed_at: row.try_get("executed_at").unwrap_or_default(),
         success,
         execution_succeeded,
@@ -507,6 +508,7 @@ impl CronStore {
 #[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
 pub struct CronExecutionEntry {
     pub id: String,
+    pub cron_id: Option<String>,
     pub executed_at: String,
     pub success: bool,
     pub execution_succeeded: bool,
@@ -648,6 +650,35 @@ mod tests {
         assert_eq!(stats.delivery_success_count, 1);
         assert_eq!(stats.delivery_failure_count, 0);
         assert_eq!(stats.delivery_skipped_count, 0);
+    }
+
+    #[tokio::test]
+    async fn load_all_executions_includes_cron_id() {
+        let store = setup_store().await;
+        insert_cron_job(&store, "daily-digest").await;
+
+        store
+            .log_execution(
+                "daily-digest",
+                &CronExecutionRecord {
+                    execution_succeeded: true,
+                    delivery_attempted: false,
+                    delivery_succeeded: None,
+                    result_summary: Some("digest ready".to_string()),
+                    execution_error: None,
+                    delivery_error: None,
+                },
+            )
+            .await
+            .expect("log execution");
+
+        let executions = store
+            .load_all_executions(10)
+            .await
+            .expect("load all executions");
+        let execution = executions.first().expect("execution entry");
+
+        assert_eq!(execution.cron_id.as_deref(), Some("daily-digest"));
     }
 
     #[tokio::test]

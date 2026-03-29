@@ -745,6 +745,7 @@ export interface CronJobWithStats {
 
 export interface CronExecutionEntry {
 	id: string;
+	cron_id: string | null;
 	executed_at: string;
 	success: boolean;
 	execution_succeeded: boolean;

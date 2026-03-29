@@ -2498,6 +2498,7 @@ export interface components {
         };
         /** @description Entry in the cron execution log. */
         CronExecutionEntry: {
+            cron_id?: string | null;
             delivery_attempted: boolean;
             delivery_error?: string | null;
             delivery_succeeded?: boolean | null;

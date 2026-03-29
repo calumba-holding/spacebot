@@ -309,7 +309,7 @@ impl Scheduler {
                 if let Some(fast_forward_to) =
                     stale_recovery_next_run_at(&job, &context, next_run_at, now)
                 {
-                    if advance_job_cursor(
+                    if let Err(error) = advance_job_cursor(
                         &context,
                         &jobs,
                         &job_id,
@@ -318,9 +318,15 @@ impl Scheduler {
                         fast_forward_to,
                     )
                     .await
-                    .is_err()
                     {
-                        tracing::warn!(cron_id = %job_id, "failed to fast-forward stale cron cursor");
+                        tracing::warn!(
+                            cron_id = %job_id,
+                            scheduled_run_at = %format_cron_timestamp(next_run_at),
+                            next_run_at = %format_cron_timestamp(fast_forward_to),
+                            %error,
+                            "failed to fast-forward stale cron cursor"
+                        );
+                        tokio::time::sleep(Duration::from_secs(5)).await;
                     }
                     continue;
                 }
@@ -1298,7 +1304,25 @@ async fn run_cron_job(job: &CronJob, context: &CronContext) -> Result<()> {
             if !channel_handle.is_finished() {
                 channel_handle.abort();
             }
-            let _ = channel_handle.await;
+
+            match channel_handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(
+                        cron_id = %job.id,
+                        %error,
+                        "cron channel returned an error after timing out"
+                    );
+                }
+                Err(join_error) if !join_error.is_cancelled() => {
+                    tracing::warn!(
+                        cron_id = %job.id,
+                        %join_error,
+                        "cron channel join failed after timing out"
+                    );
+                }
+                Err(_) => {}
+            }
 
             let error_message = format!("cron job timed out after {timeout:?}");
             persist_cron_execution(
@@ -1402,9 +1426,7 @@ fn persist_cron_execution(context: &CronContext, cron_id: &str, record: CronExec
 
 #[cfg(feature = "metrics")]
 fn record_cron_metrics(agent_id: &str, cron_id: &str, record: &CronExecutionRecord) {
-    let overall_result = if record.execution_succeeded
-        && (!record.delivery_attempted || record.delivery_succeeded == Some(true))
-    {
+    let overall_result = if record.execution_succeeded {
         "success"
     } else {
         "failure"
