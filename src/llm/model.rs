@@ -2416,29 +2416,27 @@ fn process_openai_responses_stream_event(
     let mut events = Vec::new();
 
     match event {
-        OpenAiResponsesStreamingCompletionChunk::Delta(chunk) => {
-            match &chunk.data {
-                OpenAiResponsesItemChunkKind::OutputItemAdded(message) => {
-                    if let OpenAiResponsesStreamingItemDoneOutput {
-                        item: OpenAiResponsesOutput::FunctionCall(function_call),
-                        ..
-                    } = message
-                    {
-                        let entry = pending_tool_calls
-                            .entry(function_call.id.clone())
-                            .or_insert_with(OpenAiStreamingToolCall::default);
-                        entry.id = function_call.id.clone();
-                        entry.name = function_call.name.clone();
-                        events.push(RawStreamingChoice::ToolCallDelta {
-                            id: function_call.id.clone(),
-                            internal_call_id: entry.internal_call_id.clone(),
-                            content: rig::streaming::ToolCallDeltaContent::Name(
-                                function_call.name.clone(),
-                            ),
-                        });
-                    }
-                }
-                OpenAiResponsesItemChunkKind::OutputItemDone(message) => match message {
+        OpenAiResponsesStreamingCompletionChunk::Delta(chunk) => match &chunk.data {
+            OpenAiResponsesItemChunkKind::OutputItemAdded(
+                OpenAiResponsesStreamingItemDoneOutput {
+                    item: OpenAiResponsesOutput::FunctionCall(function_call),
+                    ..
+                },
+            ) => {
+                let entry = pending_tool_calls
+                    .entry(function_call.id.clone())
+                    .or_default();
+                entry.id = function_call.id.clone();
+                entry.name = function_call.name.clone();
+                events.push(RawStreamingChoice::ToolCallDelta {
+                    id: function_call.id.clone(),
+                    internal_call_id: entry.internal_call_id.clone(),
+                    content: rig::streaming::ToolCallDeltaContent::Name(function_call.name.clone()),
+                });
+            }
+            OpenAiResponsesItemChunkKind::OutputItemAdded(_) => {}
+            OpenAiResponsesItemChunkKind::OutputItemDone(message) => {
+                match message {
                     OpenAiResponsesStreamingItemDoneOutput {
                         item: OpenAiResponsesOutput::FunctionCall(function_call),
                         ..
@@ -2486,32 +2484,30 @@ fn process_openai_responses_stream_event(
                             });
                         }
                     }
-                },
-                OpenAiResponsesItemChunkKind::OutputTextDelta(delta)
-                | OpenAiResponsesItemChunkKind::RefusalDelta(delta) => {
-                    events.push(RawStreamingChoice::Message(delta.delta.clone()));
                 }
-                OpenAiResponsesItemChunkKind::ReasoningSummaryTextDelta(delta) => {
-                    events.push(RawStreamingChoice::ReasoningDelta {
-                        id: None,
-                        reasoning: delta.delta.clone(),
-                    });
-                }
-                OpenAiResponsesItemChunkKind::FunctionCallArgsDelta(delta) => {
-                    let entry = pending_tool_calls
-                        .entry(delta.item_id.clone())
-                        .or_insert_with(OpenAiStreamingToolCall::default);
-                    entry.id = delta.item_id.clone();
-                    entry.arguments.push_str(&delta.delta);
-                    events.push(RawStreamingChoice::ToolCallDelta {
-                        id: delta.item_id.clone(),
-                        internal_call_id: entry.internal_call_id.clone(),
-                        content: rig::streaming::ToolCallDeltaContent::Delta(delta.delta.clone()),
-                    });
-                }
-                _ => {}
             }
-        }
+            OpenAiResponsesItemChunkKind::OutputTextDelta(delta)
+            | OpenAiResponsesItemChunkKind::RefusalDelta(delta) => {
+                events.push(RawStreamingChoice::Message(delta.delta.clone()));
+            }
+            OpenAiResponsesItemChunkKind::ReasoningSummaryTextDelta(delta) => {
+                events.push(RawStreamingChoice::ReasoningDelta {
+                    id: None,
+                    reasoning: delta.delta.clone(),
+                });
+            }
+            OpenAiResponsesItemChunkKind::FunctionCallArgsDelta(delta) => {
+                let entry = pending_tool_calls.entry(delta.item_id.clone()).or_default();
+                entry.id = delta.item_id.clone();
+                entry.arguments.push_str(&delta.delta);
+                events.push(RawStreamingChoice::ToolCallDelta {
+                    id: delta.item_id.clone(),
+                    internal_call_id: entry.internal_call_id.clone(),
+                    content: rig::streaming::ToolCallDeltaContent::Delta(delta.delta.clone()),
+                });
+            }
+            _ => {}
+        },
         OpenAiResponsesStreamingCompletionChunk::Response(chunk) => {
             if !matches!(
                 chunk.kind,

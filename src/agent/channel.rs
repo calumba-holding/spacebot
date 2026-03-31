@@ -2340,12 +2340,7 @@ impl Channel {
             };
 
             // In Ambient mode, we still show memory but don't trigger persistence
-            let memory_bulletin_text =
-                if matches!(self.resolved_settings.memory, MemoryMode::Ambient) {
-                    Some(memory_bulletin.to_string())
-                } else {
-                    Some(memory_bulletin.to_string())
-                };
+            let memory_bulletin_text = Some(memory_bulletin.to_string());
 
             (working_memory, channel_activity_map, memory_bulletin_text)
         };

@@ -1092,8 +1092,8 @@ pub(super) async fn update_channel_settings(
     // Notify the running channel to hot-reload its settings.
     {
         let channel_states = state.channel_states.read().await;
-        if let Some(channel_state) = channel_states.get(&channel_id) {
-            if let Err(error) =
+        if let Some(channel_state) = channel_states.get(&channel_id)
+            && let Err(error) =
                 channel_state
                     .deps
                     .event_tx
@@ -1101,13 +1101,12 @@ pub(super) async fn update_channel_settings(
                         agent_id: channel_state.deps.agent_id.clone(),
                         channel_id: channel_state.channel_id.clone(),
                     })
-            {
-                tracing::warn!(
-                    %error,
-                    %channel_id,
-                    "failed to send SettingsUpdated event to channel"
-                );
-            }
+        {
+            tracing::warn!(
+                %error,
+                %channel_id,
+                "failed to send SettingsUpdated event to channel"
+            );
         }
     }
 

@@ -47,6 +47,7 @@ pub struct BranchExecutionConfig {
 
 impl Branch {
     /// Create a new branch from a channel.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         channel_id: ChannelId,
         description: impl Into<String>,
