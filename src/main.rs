@@ -2190,7 +2190,7 @@ async fn run(
                         let store = spacebot::conversation::PortalConversationStore::new(
                             agent.deps.sqlite_pool.clone(),
                         );
-                        match store.get(&agent_id.to_string(), &conversation_id).await {
+                        match store.get(agent_id.as_ref(), &conversation_id).await {
                             Ok(Some(conv)) => {
                                 spacebot::conversation::settings::ResolvedConversationSettings::resolve(
                                     conv.settings.as_ref(),
@@ -2223,7 +2223,7 @@ async fn run(
                         let store = spacebot::conversation::ChannelSettingsStore::new(
                             agent.deps.sqlite_pool.clone(),
                         );
-                        match store.get(&agent_id.to_string(), &conversation_id).await {
+                        match store.get(agent_id.as_ref(), &conversation_id).await {
                             Ok(Some(settings)) => {
                                 spacebot::conversation::settings::ResolvedConversationSettings::resolve(
                                     Some(&settings),
