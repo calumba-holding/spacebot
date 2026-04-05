@@ -24,6 +24,7 @@ export function PortalPanel({ agentId }: PortalPanelProps) {
 	const [showHistory, setShowHistory] = useState(false);
 	const [settings, setSettings] = useState<ConversationSettings>({});
 	const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+	const [sendCount, setSendCount] = useState(0);
 	// Track uploaded attachment IDs keyed by file name+size for deduplication.
 	const uploadedIds = useRef<Map<string, string>>(new Map());
 
@@ -188,6 +189,7 @@ export function PortalPanel({ agentId }: PortalPanelProps) {
 			attachmentIds = ids.filter((id): id is string => id !== null);
 		}
 
+		setSendCount((n) => n + 1);
 		sendMessage(trimmed, attachmentIds.length > 0 ? attachmentIds : undefined);
 	};
 
@@ -256,6 +258,7 @@ export function PortalPanel({ agentId }: PortalPanelProps) {
 							conversationId={activeConversationId}
 							timeline={timeline}
 							isTyping={isTyping}
+							sendCount={sendCount}
 						/>
 
 						{error && (

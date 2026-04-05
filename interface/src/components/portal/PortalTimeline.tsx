@@ -140,6 +140,7 @@ interface PortalTimelineProps {
 	conversationId: string;
 	timeline: TimelineItem[];
 	isTyping: boolean;
+	sendCount: number;
 }
 
 function ThinkingIndicator() {
@@ -182,6 +183,7 @@ export function PortalTimeline({
 	conversationId,
 	timeline,
 	isTyping,
+	sendCount,
 }: PortalTimelineProps) {
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const previousLengthRef = useRef(0);
@@ -230,6 +232,16 @@ export function PortalTimeline({
 
 		previousLengthRef.current = currentLength;
 	}, [visibleItems.length, isTyping]);
+
+	// Always scroll to bottom when the user sends a message.
+	useEffect(() => {
+		if (sendCount === 0) return;
+		const element = scrollRef.current;
+		if (!element) return;
+		requestAnimationFrame(() => {
+			element.scrollTo({top: element.scrollHeight, behavior: "smooth"});
+		});
+	}, [sendCount]);
 
 	const copyMessage = async (content: string) => {
 		await navigator.clipboard.writeText(content);
