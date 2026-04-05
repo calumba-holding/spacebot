@@ -1617,16 +1617,24 @@ async fn run(
 
     // Instance-level global task database. Shared across all agents with globally
     // unique task numbers. Lives alongside secrets.redb in the instance data dir.
-    let global_task_pool = spacebot::db::connect_global_tasks(&config.instance_dir.join("data"))
+    let instance_pool = spacebot::db::connect_instance_db(&config.instance_dir.join("data"))
         .await
-        .context("failed to initialize global task database")?;
+        .context("failed to initialize instance database")?;
 
     // Migrate legacy per-agent tasks to the global database on first run.
-    spacebot::tasks::migration::migrate_legacy_tasks(&config.instance_dir, &global_task_pool)
+    spacebot::tasks::migration::migrate_legacy_tasks(&config.instance_dir, &instance_pool)
         .await
         .context("failed to migrate legacy tasks to global database")?;
 
-    let global_task_store = Arc::new(spacebot::tasks::TaskStore::new(global_task_pool));
+    let global_task_store = Arc::new(spacebot::tasks::TaskStore::new(instance_pool.clone()));
+
+    // Instance-level shared project store. Replaces per-agent project stores.
+    let global_project_store = Arc::new(spacebot::projects::ProjectStore::new(instance_pool.clone()));
+
+    // Migrate per-agent projects into the instance database on first run.
+    spacebot::projects::migration::migrate_legacy_projects(&config.instance_dir, &instance_pool)
+        .await
+        .context("failed to migrate legacy projects to instance database")?;
 
     // Start HTTP API server if enabled
     let mut api_state = spacebot::api::ApiState::new_with_provider_sender(
@@ -1803,6 +1811,7 @@ async fn run(
             agent_humans.clone(),
             injection_tx.clone(),
             global_task_store.clone(),
+            global_project_store.clone(),
             &bootstrapped_store,
         )
         .await?;
@@ -2577,6 +2586,7 @@ async fn run(
                                     agent_humans.clone(),
                                     injection_tx.clone(),
                                     global_task_store.clone(),
+                                    global_project_store.clone(),
                                     &bootstrapped_store,
                                 ).await {
                                     Ok(()) => {
@@ -2720,6 +2730,7 @@ async fn initialize_agents(
     agent_humans: Arc<ArcSwap<Vec<spacebot::config::HumanDef>>>,
     injection_tx: tokio::sync::mpsc::Sender<spacebot::ChannelInjection>,
     global_task_store: Arc<spacebot::tasks::TaskStore>,
+    global_project_store: Arc<spacebot::projects::ProjectStore>,
     bootstrapped_store: &Option<Arc<spacebot::secrets::store::SecretsStore>>,
 ) -> anyhow::Result<()> {
     let resolved_agents = config.resolve_agents();
@@ -2838,7 +2849,7 @@ async fn initialize_agents(
         // Per-agent memory system
         let memory_store =
             spacebot::memory::MemoryStore::with_agent_id(db.sqlite.clone(), &agent_config.id);
-        let project_store = Arc::new(spacebot::projects::ProjectStore::new(db.sqlite.clone()));
+        let project_store = global_project_store.clone();
         let embedding_table = spacebot::memory::EmbeddingTable::open_or_create(&db.lance)
             .await
             .with_context(|| {
@@ -3026,7 +3037,6 @@ async fn initialize_agents(
         let mut agent_configs = Vec::new();
         let mut memory_searches = std::collections::HashMap::new();
         let mut mcp_managers = std::collections::HashMap::new();
-        let mut project_stores = std::collections::HashMap::new();
         let mut agent_workspaces = std::collections::HashMap::new();
         let mut agent_identity_dirs = std::collections::HashMap::new();
         let mut agent_data_dirs = std::collections::HashMap::new();
@@ -3038,7 +3048,6 @@ async fn initialize_agents(
             agent_pools.insert(agent_id.to_string(), agent.db.sqlite.clone());
             memory_searches.insert(agent_id.to_string(), agent.deps.memory_search.clone());
             mcp_managers.insert(agent_id.to_string(), agent.deps.mcp_manager.clone());
-            project_stores.insert(agent_id.to_string(), agent.deps.project_store.clone());
             agent_workspaces.insert(agent_id.to_string(), agent.config.workspace.clone());
             agent_identity_dirs.insert(agent_id.to_string(), agent.config.identity_dir.clone());
             agent_data_dirs.insert(agent_id.to_string(), agent.config.data_dir.clone());
@@ -3061,7 +3070,7 @@ async fn initialize_agents(
         api_state.set_agent_configs(agent_configs);
         api_state.set_memory_searches(memory_searches);
         api_state.set_mcp_managers(mcp_managers);
-        api_state.set_project_stores(project_stores);
+        api_state.set_project_store(global_project_store.clone());
         api_state.set_runtime_configs(runtime_configs);
         api_state.set_agent_workspaces(agent_workspaces);
         api_state.set_agent_identity_dirs(agent_identity_dirs);

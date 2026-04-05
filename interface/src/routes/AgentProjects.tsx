@@ -7,6 +7,7 @@ import {
 	type ProjectRepo,
 	type CreateProjectRequest,
 	type CreateWorktreeRequest,
+	type UpdateProjectRequest,
 } from "@/api/client";
 import { Badge, Button, DialogRoot, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription, Input, Label, TextArea } from "@spacedrive/primitives";
 import { formatTimeAgo } from "@/lib/format";
@@ -218,6 +219,175 @@ function CreateProjectDialog({
 							loading={createMutation.isPending}
 						>
 							Create
+						</Button>
+					</DialogFooter>
+				</form>
+			</DialogContent>
+		</DialogRoot>
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Edit Project Dialog
+// ---------------------------------------------------------------------------
+
+function EditProjectDialog({
+	open,
+	onOpenChange,
+	project,
+}: {
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+	project: Project;
+}) {
+	const queryClient = useQueryClient();
+	const [name, setName] = useState(project.name);
+	const [description, setDescription] = useState(project.description);
+	const [icon, setIcon] = useState(project.icon);
+	const [tagsRaw, setTagsRaw] = useState(project.tags.join(", "));
+	const [logoPath, setLogoPath] = useState(project.logo_path ?? "");
+	const [status, setStatus] = useState<"active" | "archived">(project.status);
+
+	// Reset form state when the dialog opens or the project changes.
+	useEffect(() => {
+		if (open) {
+			setName(project.name);
+			setDescription(project.description);
+			setIcon(project.icon);
+			setTagsRaw(project.tags.join(", "));
+			setLogoPath(project.logo_path ?? "");
+			setStatus(project.status);
+		}
+	}, [open, project]);
+
+	const updateMutation = useMutation({
+		mutationFn: (request: UpdateProjectRequest) =>
+			api.updateProject(project.id, request),
+		onSuccess: () => {
+			queryClient.invalidateQueries({ queryKey: ["project", project.id] });
+			queryClient.invalidateQueries({ queryKey: ["projects"] });
+			onOpenChange(false);
+		},
+	});
+
+	const handleSubmit = (e: React.FormEvent) => {
+		e.preventDefault();
+		if (!name.trim()) return;
+		const tags = tagsRaw
+			.split(",")
+			.map((t) => t.trim())
+			.filter(Boolean);
+		updateMutation.mutate({
+			name: name.trim(),
+			description: description.trim(),
+			icon: icon.trim(),
+			tags,
+			logo_path: logoPath.trim() || null,
+			status,
+		});
+	};
+
+	return (
+		<DialogRoot open={open} onOpenChange={onOpenChange}>
+			<DialogContent>
+				<DialogHeader>
+					<DialogTitle>Edit Project</DialogTitle>
+					<DialogDescription>
+						Update project metadata. Root path cannot be changed.
+					</DialogDescription>
+				</DialogHeader>
+				<form onSubmit={handleSubmit} className="space-y-4">
+					<div>
+						<Label>Name</Label>
+						<Input
+							value={name}
+							onChange={(e) => setName(e.target.value)}
+							autoFocus
+						/>
+					</div>
+					<div>
+						<Label>Description</Label>
+						<TextArea
+							value={description}
+							onChange={(e) => setDescription(e.target.value)}
+							placeholder="What this project is about..."
+							rows={2}
+						/>
+					</div>
+					<div className="flex gap-3">
+						<div className="flex-1">
+							<Label>Icon</Label>
+							<Input
+								value={icon}
+								onChange={(e) => setIcon(e.target.value)}
+								placeholder="e.g. a single emoji"
+								maxLength={4}
+							/>
+						</div>
+						<div className="flex-[2]">
+							<Label>Tags (comma-separated)</Label>
+							<Input
+								value={tagsRaw}
+								onChange={(e) => setTagsRaw(e.target.value)}
+								placeholder="rust, backend, api"
+							/>
+						</div>
+					</div>
+					<div>
+						<Label>Logo Path (relative to project root)</Label>
+						<Input
+							value={logoPath}
+							onChange={(e) => setLogoPath(e.target.value)}
+							placeholder=".github/logo.png"
+							className="font-mono"
+						/>
+						<p className="mt-1 text-tiny text-ink-faint">
+							Leave blank to clear. Re-scan the project to auto-detect.
+						</p>
+					</div>
+					<div>
+						<Label>Status</Label>
+						<div className="mt-1 flex gap-2">
+							<button
+								type="button"
+								onClick={() => setStatus("active")}
+								className={clsx(
+									"rounded-md border px-3 py-1.5 text-xs font-medium transition-colors",
+									status === "active"
+										? "border-accent bg-accent/10 text-accent"
+										: "border-app-line text-ink-dull hover:text-ink",
+								)}
+							>
+								Active
+							</button>
+							<button
+								type="button"
+								onClick={() => setStatus("archived")}
+								className={clsx(
+									"rounded-md border px-3 py-1.5 text-xs font-medium transition-colors",
+									status === "archived"
+										? "border-accent bg-accent/10 text-accent"
+										: "border-app-line text-ink-dull hover:text-ink",
+								)}
+							>
+								Archived
+							</button>
+						</div>
+					</div>
+					<DialogFooter>
+						<Button
+							type="button"
+							variant="outline"
+							onClick={() => onOpenChange(false)}
+						>
+							Cancel
+						</Button>
+						<Button
+							type="submit"
+							disabled={!name.trim()}
+							loading={updateMutation.isPending}
+						>
+							Save
 						</Button>
 					</DialogFooter>
 				</form>
@@ -595,6 +765,7 @@ function ProjectDetail({
 
 	const [showCreateWorktree, setShowCreateWorktree] = useState(false);
 	const [showDeleteProject, setShowDeleteProject] = useState(false);
+	const [showEditProject, setShowEditProject] = useState(false);
 	const [deleteRepoTarget, setDeleteRepoTarget] = useState<string | null>(null);
 	const [deleteWorktreeTarget, setDeleteWorktreeTarget] = useState<string | null>(null);
 	// Track which repo's "Add Worktree" was clicked to pre-select in dialog
@@ -704,6 +875,13 @@ function ProjectDetail({
 						</div>
 
 						<div className="flex shrink-0 items-center gap-2">
+							<Button
+								variant="outline"
+								size="sm"
+								onClick={() => setShowEditProject(true)}
+							>
+								Edit
+							</Button>
 							<Button
 								variant="outline"
 								size="sm"
@@ -819,6 +997,12 @@ function ProjectDetail({
 					}
 				/>
 			)}
+
+			<EditProjectDialog
+				open={showEditProject}
+				onOpenChange={setShowEditProject}
+				project={project}
+			/>
 
 			<DeleteDialog
 				open={showDeleteProject}

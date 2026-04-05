@@ -22,7 +22,7 @@ import { api, getApiBase } from "@/api/client";
 import type { ChannelLiveState } from "@/hooks/useChannelLiveState";
 import { useAgentOrder } from "@/hooks/useAgentOrder";
 import { House, TreeStructure, Wrench, CheckSquare, GearSix, DotsThree, ChatCircleDots, Broadcast, Brain, Lightning, CalendarDots } from "@phosphor-icons/react";
-import { CircleButton } from "@spacedrive/primitives";
+import { CircleButton, SelectPill } from "@spacedrive/primitives";
 import { CreateAgentDialog } from "@/components/CreateAgentDialog";
 import { ProfileAvatar } from "@/components/ProfileAvatar";
 
@@ -211,6 +211,13 @@ export function Sidebar({ liveStates: _liveStates }: SidebarProps) {
 
 	return (
 		<aside className="flex w-[220px] shrink-0 flex-col border-r border-app-line bg-sidebar">
+			{/* Company switcher */}
+			<div className="px-3 pt-3">
+				<SelectPill variant="sidebar" size="md" className="w-full">
+					<span className="font-semibold">Spacedrive Inc.</span>
+				</SelectPill>
+			</div>
+
 			{/* Primary nav */}
 			<nav className="space-y-0.5 px-3 py-3">
 				{navItems.map((item) => {

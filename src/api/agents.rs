@@ -461,6 +461,13 @@ pub(super) async fn trigger_warmup(
             );
             continue;
         };
+        let Some(project_store) = state.project_store.load().as_ref().clone() else {
+            tracing::warn!(
+                agent_id,
+                "shared project store not initialized, skipping warmup"
+            );
+            continue;
+        };
 
         let llm_manager = llm_manager.clone();
         let force = request.force;
@@ -469,8 +476,6 @@ pub(super) async fn trigger_warmup(
         let humans = (**state.agent_humans.load()).clone();
         tokio::spawn(async move {
             let (event_tx, memory_event_tx) = crate::create_process_event_buses();
-            let project_store =
-                std::sync::Arc::new(crate::projects::ProjectStore::new(sqlite_pool.clone()));
             let working_memory_tz = runtime_config
                 .user_timezone
                 .load()
@@ -864,7 +869,12 @@ pub async fn create_agent_internal(
         .await,
     );
 
-    let project_store = std::sync::Arc::new(crate::projects::ProjectStore::new(db.sqlite.clone()));
+    let project_store = state
+        .project_store
+        .load()
+        .as_ref()
+        .clone()
+        .ok_or_else(|| "shared project store not initialized".to_string())?;
 
     // Inject active project root paths into the sandbox allowlist.
     crate::projects::refresh_sandbox_project_paths(&project_store, &sandbox).await;
@@ -1047,12 +1057,6 @@ pub async fn create_agent_internal(
         let mut sandboxes = (**state.sandboxes.load()).clone();
         sandboxes.insert(agent_id.clone(), sandbox);
         state.sandboxes.store(std::sync::Arc::new(sandboxes));
-
-        let mut project_stores_map = (**state.project_stores.load()).clone();
-        project_stores_map.insert(agent_id.clone(), project_store);
-        state
-            .project_stores
-            .store(std::sync::Arc::new(project_stores_map));
 
         let mut agent_infos = (**state.agent_configs.load()).clone();
         agent_infos.push(AgentInfo {
@@ -1383,11 +1387,6 @@ pub(super) async fn delete_agent(
             .cortex_chat_sessions
             .store(std::sync::Arc::new(sessions));
 
-        let mut project_stores_map = (**state.project_stores.load()).clone();
-        project_stores_map.remove(&agent_id);
-        state
-            .project_stores
-            .store(std::sync::Arc::new(project_stores_map));
     }
 
     // Signal the main event loop to remove the agent

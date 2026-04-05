@@ -6,7 +6,6 @@ import {
 } from "@tanstack/react-router";
 import {BASE_PATH} from "@/api/client";
 import {ConnectionBanner} from "@/components/ConnectionBanner";
-import {TopBar, TopBarProvider, useSetTopBar} from "@/components/TopBar";
 import {Sidebar} from "@/components/Sidebar";
 import {Overview} from "@/routes/Overview";
 import {AgentDetail} from "@/routes/AgentDetail";
@@ -26,7 +25,6 @@ import {AgentChat} from "@/routes/AgentChat";
 import {Settings} from "@/routes/Settings";
 import {Orchestrate} from "@/routes/Orchestrate";
 import {useLiveContext} from "@/hooks/useLiveContext";
-import {FolderOpen} from "@phosphor-icons/react";
 
 // ── Root layout ──────────────────────────────────────────────────────────
 
@@ -34,18 +32,15 @@ function RootLayout() {
 	const {liveStates, connectionState, hasData} = useLiveContext();
 
 	return (
-		<TopBarProvider>
-			<div className="flex h-screen flex-col overflow-hidden bg-app">
-				<TopBar />
-				<ConnectionBanner state={connectionState} hasData={hasData} />
-				<div className="flex min-h-0 flex-1">
-					<Sidebar liveStates={liveStates} />
-					<div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-						<Outlet />
-					</div>
+		<div className="flex h-screen flex-col overflow-hidden bg-app">
+			<ConnectionBanner state={connectionState} hasData={hasData} />
+			<div className="flex min-h-0 flex-1">
+				<Sidebar liveStates={liveStates} />
+				<div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+					<Outlet />
 				</div>
 			</div>
-		</TopBarProvider>
+		</div>
 	);
 }
 
@@ -68,11 +63,6 @@ const dashboardRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/dashboard",
 	component: function DashboardPage() {
-		useSetTopBar(
-			<div className="flex h-full items-center px-6">
-				<h1 className="font-plex text-sm font-medium text-ink">Dashboard</h1>
-			</div>,
-		);
 		return (
 			<div className="flex flex-1 items-center justify-center">
 				<p className="text-sm text-ink-faint">Dashboard coming soon</p>
@@ -98,11 +88,6 @@ const logsRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/logs",
 	component: function LogsPage() {
-		useSetTopBar(
-			<div className="flex h-full items-center px-6">
-				<h1 className="font-plex text-sm font-medium text-ink">Logs</h1>
-			</div>,
-		);
 		return (
 			<div className="flex flex-1 items-center justify-center">
 				<p className="text-sm text-ink-faint">Logs coming soon</p>
@@ -115,14 +100,6 @@ const orchestrateRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/orchestrate",
 	component: function OrchestratePage() {
-		useSetTopBar(
-			<div className="flex h-full items-center gap-4 px-6">
-				<h1 className="font-plex text-sm font-medium text-ink">
-					Orchestrate
-				</h1>
-				<span className="text-xs text-ink-faint">Active workers across all agents</span>
-			</div>,
-		);
 		return <Orchestrate />;
 	},
 });
@@ -131,12 +108,6 @@ const tasksRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/tasks",
 	component: function TasksPage() {
-		useSetTopBar(
-			<div className="flex h-full items-center gap-4 px-6">
-				<h1 className="font-plex text-sm font-medium text-ink">Tasks</h1>
-				<span className="text-xs text-ink-faint">All tasks across agents</span>
-			</div>,
-		);
 		return <GlobalTasks />;
 	},
 });
@@ -204,13 +175,6 @@ const projectsRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/projects",
 	component: function ProjectsPage() {
-		useSetTopBar(
-			<div className="flex h-full items-center gap-4 px-6">
-				<FolderOpen className="size-4 text-ink-dull" weight="bold" />
-				<h1 className="font-plex text-sm font-medium text-ink">Projects</h1>
-				<span className="text-xs text-ink-faint">All projects across agents</span>
-			</div>,
-		);
 		return <AgentProjects />;
 	},
 });

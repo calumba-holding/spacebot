@@ -83,6 +83,8 @@ pub(super) struct UpdateProjectRequest {
     #[serde(default)]
     tags: Option<Vec<String>>,
     #[serde(default)]
+    logo_path: Option<String>,
+    #[serde(default)]
     settings: Option<serde_json::Value>,
     #[serde(default)]
     status: Option<String>,
@@ -161,8 +163,8 @@ fn default_true() -> bool {
 /// Refresh the sandbox allowlist with project root paths after a project
 /// create, delete, or scan. Best-effort — logs and continues on error.
 async fn refresh_sandbox(state: &ApiState) {
-    let stores = state.project_stores.load();
-    let Some(store) = stores.values().next() else { return };
+    let store_guard = state.project_store.load();
+    let Some(store) = store_guard.as_ref().as_ref() else { return };
     let sandboxes = state.sandboxes.load();
     for sandbox in sandboxes.values() {
         crate::projects::refresh_sandbox_project_paths(store, sandbox).await;
@@ -318,8 +320,8 @@ pub(super) async fn list_projects(
     State(state): State<Arc<ApiState>>,
     Query(query): Query<ProjectListQuery>,
 ) -> Result<Json<ProjectListResponse>, StatusCode> {
-    let stores = state.project_stores.load();
-    let store = stores.values().next().ok_or(StatusCode::NOT_FOUND)?;
+    let store_guard = state.project_store.load();
+    let store = store_guard.as_ref().as_ref().ok_or(StatusCode::NOT_FOUND)?;
 
     let status = query.status.as_deref().and_then(ProjectStatus::parse);
 
@@ -349,8 +351,8 @@ pub(super) async fn create_project(
     State(state): State<Arc<ApiState>>,
     Json(request): Json<CreateProjectRequest>,
 ) -> Result<Json<ProjectResponse>, StatusCode> {
-    let stores = state.project_stores.load();
-    let store = stores.values().next().ok_or(StatusCode::NOT_FOUND)?;
+    let store_guard = state.project_store.load();
+    let store = store_guard.as_ref().as_ref().ok_or(StatusCode::NOT_FOUND)?;
 
     let project = store
         .create_project(CreateProjectInput {
@@ -453,8 +455,8 @@ pub(super) async fn get_project(
     State(state): State<Arc<ApiState>>,
     Path(project_id): Path<String>,
 ) -> Result<Json<ProjectResponse>, StatusCode> {
-    let stores = state.project_stores.load();
-    let store = stores.values().next().ok_or(StatusCode::NOT_FOUND)?;
+    let store_guard = state.project_store.load();
+    let store = store_guard.as_ref().as_ref().ok_or(StatusCode::NOT_FOUND)?;
 
     let project = store
         .get_project_with_relations(&project_id)
@@ -487,8 +489,8 @@ pub(super) async fn update_project(
     Path(project_id): Path<String>,
     Json(request): Json<UpdateProjectRequest>,
 ) -> Result<Json<ProjectResponse>, StatusCode> {
-    let stores = state.project_stores.load();
-    let store = stores.values().next().ok_or(StatusCode::NOT_FOUND)?;
+    let store_guard = state.project_store.load();
+    let store = store_guard.as_ref().as_ref().ok_or(StatusCode::NOT_FOUND)?;
 
     let status = request.status.as_deref().and_then(ProjectStatus::parse);
 
@@ -500,9 +502,9 @@ pub(super) async fn update_project(
                 description: request.description,
                 icon: request.icon,
                 tags: request.tags,
+                logo_path: request.logo_path,
                 settings: request.settings,
                 status,
-                ..Default::default()
             },
         )
         .await
@@ -542,8 +544,8 @@ pub(super) async fn delete_project(
     State(state): State<Arc<ApiState>>,
     Path(project_id): Path<String>,
 ) -> Result<Json<ActionResponse>, StatusCode> {
-    let stores = state.project_stores.load();
-    let store = stores.values().next().ok_or(StatusCode::NOT_FOUND)?;
+    let store_guard = state.project_store.load();
+    let store = store_guard.as_ref().as_ref().ok_or(StatusCode::NOT_FOUND)?;
 
     let deleted = store
         .delete_project(&project_id)
@@ -583,8 +585,8 @@ pub(super) async fn scan_project(
     State(state): State<Arc<ApiState>>,
     Path(project_id): Path<String>,
 ) -> Result<Json<ProjectResponse>, StatusCode> {
-    let stores = state.project_stores.load();
-    let store = stores.values().next().ok_or(StatusCode::NOT_FOUND)?;
+    let store_guard = state.project_store.load();
+    let store = store_guard.as_ref().as_ref().ok_or(StatusCode::NOT_FOUND)?;
 
     let project = store
         .get_project(&project_id)
@@ -690,8 +692,8 @@ pub(super) async fn create_repo(
     Path(project_id): Path<String>,
     Json(request): Json<CreateRepoRequest>,
 ) -> Result<Json<RepoResponse>, StatusCode> {
-    let stores = state.project_stores.load();
-    let store = stores.values().next().ok_or(StatusCode::NOT_FOUND)?;
+    let store_guard = state.project_store.load();
+    let store = store_guard.as_ref().as_ref().ok_or(StatusCode::NOT_FOUND)?;
 
     // Verify project exists.
     store
@@ -743,8 +745,8 @@ pub(super) async fn delete_repo(
     State(state): State<Arc<ApiState>>,
     Path((project_id, repo_id)): Path<(String, String)>,
 ) -> Result<Json<ActionResponse>, StatusCode> {
-    let stores = state.project_stores.load();
-    let store = stores.values().next().ok_or(StatusCode::NOT_FOUND)?;
+    let store_guard = state.project_store.load();
+    let store = store_guard.as_ref().as_ref().ok_or(StatusCode::NOT_FOUND)?;
 
     // Verify the repo belongs to this project.
     let repo = store
@@ -793,8 +795,8 @@ pub(super) async fn create_worktree(
     Path(project_id): Path<String>,
     Json(request): Json<CreateWorktreeRequest>,
 ) -> Result<Json<WorktreeResponse>, StatusCode> {
-    let stores = state.project_stores.load();
-    let store = stores.values().next().ok_or(StatusCode::NOT_FOUND)?;
+    let store_guard = state.project_store.load();
+    let store = store_guard.as_ref().as_ref().ok_or(StatusCode::NOT_FOUND)?;
 
     // Look up the project and repo.
     let project = store
@@ -893,8 +895,8 @@ pub(super) async fn delete_worktree(
     State(state): State<Arc<ApiState>>,
     Path((project_id, worktree_id)): Path<(String, String)>,
 ) -> Result<Json<ActionResponse>, StatusCode> {
-    let stores = state.project_stores.load();
-    let store = stores.values().next().ok_or(StatusCode::NOT_FOUND)?;
+    let store_guard = state.project_store.load();
+    let store = store_guard.as_ref().as_ref().ok_or(StatusCode::NOT_FOUND)?;
 
     // Look up worktree and project for the git removal.
     let worktree = store
@@ -976,8 +978,8 @@ pub(super) async fn disk_usage(
     State(state): State<Arc<ApiState>>,
     Path(project_id): Path<String>,
 ) -> Result<Json<DiskUsageResponse>, StatusCode> {
-    let stores = state.project_stores.load();
-    let store = stores.values().next().ok_or(StatusCode::NOT_FOUND)?;
+    let store_guard = state.project_store.load();
+    let store = store_guard.as_ref().as_ref().ok_or(StatusCode::NOT_FOUND)?;
 
     let project = store
         .get_project(&project_id)
@@ -1054,8 +1056,8 @@ pub(super) async fn serve_logo(
     State(state): State<Arc<ApiState>>,
     Path(project_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    let stores = state.project_stores.load();
-    let store = stores.values().next().ok_or(StatusCode::NOT_FOUND)?;
+    let store_guard = state.project_store.load();
+    let store = store_guard.as_ref().as_ref().ok_or(StatusCode::NOT_FOUND)?;
 
     let project = store
         .get_project(&project_id)

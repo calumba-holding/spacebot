@@ -631,93 +631,64 @@ fn row_to_worktree(row: &sqlx::sqlite::SqliteRow) -> Result<ProjectWorktree> {
 
 // Logo detection
 
-/// Detect a project logo by checking well-known paths in priority order.
-/// Returns the relative path (relative to project root) of the first match.
+/// File names we recognise as a project logo, in priority order.
+const LOGO_NAMES: &[&str] = &[
+    "logo.png",
+    "logo.svg",
+    "logo.webp",
+    "icon.png",
+    "icon.svg",
+    "icon.ico",
+    "favicon.png",
+    "favicon.ico",
+    "favicon.svg",
+];
+
+/// Detect a project logo by scanning for well-known file names up to 3 levels
+/// deep. Returns the relative path (relative to project root) of the first
+/// match. Skips hidden directories (except `.github`), `node_modules`, and
+/// `target` to keep it fast.
 pub fn detect_logo(root: &Path) -> Option<String> {
-    // Priority 1: .github directory logos
-    let github_candidates = [
-        ".github/logo.png",
-        ".github/logo.svg",
-        ".github/Ball.png",
-        ".github/icon.png",
-    ];
-    for candidate in &github_candidates {
-        if root.join(candidate).exists() {
-            return Some(candidate.to_string());
+    scan_for_logo(root, root, 0)
+}
+
+fn scan_for_logo(root: &Path, dir: &Path, depth: u8) -> Option<String> {
+    if depth > 3 {
+        return None;
+    }
+
+    // Check for logo files in this directory
+    for name in LOGO_NAMES {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            let rel = candidate.strip_prefix(root).ok()?;
+            return Some(rel.to_string_lossy().to_string());
         }
     }
 
-    // Priority 2: root-level logos
-    let root_candidates = ["logo.png", "logo.svg", "icon.png", "icon.svg"];
-    for candidate in &root_candidates {
-        if root.join(candidate).exists() {
-            return Some(candidate.to_string());
-        }
-    }
+    // Recurse into subdirectories
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(_) => return None,
+    };
 
-    // Priority 3: public directory favicons and logos (shallow check)
-    let public_dirs = ["public", "apps/web/public", "packages/ui/public"];
-    let public_patterns = [
-        "favicon.png",
-        "favicon.ico",
-        "apple-touch-icon.png",
-    ];
-    for dir in &public_dirs {
-        let public_path = root.join(dir);
-        if !public_path.is_dir() {
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
             continue;
         }
-        for pattern in &public_patterns {
-            let candidate = format!("{dir}/{pattern}");
-            if root.join(&candidate).exists() {
-                return Some(candidate);
-            }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // Skip heavy/irrelevant dirs, but allow .github
+        if name == "node_modules" || name == "target" || name == ".git" || name == "dist" || name == "build" {
+            continue;
         }
-        // Check for *-logo.png and *-logo.svg in public dirs
-        if let Ok(entries) = std::fs::read_dir(&public_path) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if (name.ends_with("-logo.png") || name.ends_with("-logo.svg")) && entry.path().is_file() {
-                    return Some(format!("{dir}/{name}"));
-                }
-            }
+        if name.starts_with('.') && name != ".github" {
+            continue;
         }
-    }
-
-    // Priority 4: Tauri icons
-    let tauri_candidates = [
-        "apps/tauri/src-tauri/icons/icon.png",
-        "src-tauri/icons/icon.png",
-    ];
-    for candidate in &tauri_candidates {
-        if root.join(candidate).exists() {
-            return Some(candidate.to_string());
+        if let Some(found) = scan_for_logo(root, &path, depth + 1) {
+            return Some(found);
         }
-    }
-    // Also check **/src-tauri/icons/icon.png one level deep in apps/
-    let apps_dir = root.join("apps");
-    if apps_dir.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&apps_dir) {
-            for entry in entries.flatten() {
-                if entry.path().is_dir() {
-                    let candidate_path = entry.path().join("src-tauri/icons/icon.png");
-                    if candidate_path.exists() {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        return Some(format!("apps/{name}/src-tauri/icons/icon.png"));
-                    }
-                }
-            }
-        }
-    }
-
-    // Priority 5: Mobile icons
-    if root.join("apps/mobile/icon.png").exists() {
-        return Some("apps/mobile/icon.png".to_string());
-    }
-
-    // Priority 6: Docs favicon
-    if root.join("docs/public/favicon.png").exists() {
-        return Some("docs/public/favicon.png".to_string());
     }
 
     None
@@ -733,7 +704,7 @@ mod tests {
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
             .expect("failed to create in-memory pool");
-        sqlx::migrate!("./migrations")
+        sqlx::migrate!("./migrations/global")
             .run(&pool)
             .await
             .expect("failed to run migrations");

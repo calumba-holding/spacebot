@@ -1238,6 +1238,7 @@ export interface UpdateProjectRequest {
 	description?: string;
 	icon?: string;
 	tags?: string[];
+	logo_path?: string | null;
 	settings?: Record<string, unknown>;
 	status?: ProjectStatus;
 }

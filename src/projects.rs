@@ -1,6 +1,7 @@
 //! Project workspace tracking: repos, worktrees, and project-level configuration.
 
 pub mod git;
+pub mod migration;
 pub mod store;
 
 pub use store::{

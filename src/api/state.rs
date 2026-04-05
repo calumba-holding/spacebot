@@ -84,8 +84,8 @@ pub struct ApiState {
     pub cron_schedulers: arc_swap::ArcSwap<HashMap<String, Arc<Scheduler>>>,
     /// Instance-level global task store shared across all agents.
     pub task_store: ArcSwap<Option<Arc<TaskStore>>>,
-    /// Per-agent project stores for project/repo/worktree CRUD operations.
-    pub project_stores: arc_swap::ArcSwap<HashMap<String, Arc<ProjectStore>>>,
+    /// Instance-level shared project store.
+    pub project_store: ArcSwap<Option<Arc<ProjectStore>>>,
     /// Per-agent RuntimeConfig for reading live hot-reloaded configuration.
     pub runtime_configs: ArcSwap<HashMap<String, Arc<RuntimeConfig>>>,
     /// Per-agent MCP managers for status and reconnect APIs.
@@ -307,7 +307,7 @@ impl ApiState {
             cron_stores: arc_swap::ArcSwap::from_pointee(HashMap::new()),
             cron_schedulers: arc_swap::ArcSwap::from_pointee(HashMap::new()),
             task_store: ArcSwap::from_pointee(None),
-            project_stores: arc_swap::ArcSwap::from_pointee(HashMap::new()),
+            project_store: ArcSwap::from_pointee(None),
             runtime_configs: ArcSwap::from_pointee(HashMap::new()),
             mcp_managers: ArcSwap::from_pointee(HashMap::new()),
             sandboxes: ArcSwap::from_pointee(HashMap::new()),
@@ -749,9 +749,9 @@ impl ApiState {
         self.task_store.store(Arc::new(Some(store)));
     }
 
-    /// Set the project stores for all agents.
-    pub fn set_project_stores(&self, stores: HashMap<String, Arc<ProjectStore>>) {
-        self.project_stores.store(Arc::new(stores));
+    /// Set the shared project store.
+    pub fn set_project_store(&self, store: Arc<ProjectStore>) {
+        self.project_store.store(Arc::new(Some(store)));
     }
 
     /// Set the runtime configs for all agents.
