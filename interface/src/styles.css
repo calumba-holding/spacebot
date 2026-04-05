@@ -1,3 +1,11 @@
+/* Pre-declare the layer used by OpenCodeEmbed's portal CSS so it has the
+   lowest priority. Without this, the portal stylesheet (injected at runtime
+   after this file loads) would register its layer after Tailwind's, and
+   OpenCode's preflight (`*, ::before, ::after { border-color: ... }`) would
+   win over Spacebot's own utilities. Declaring it first here reserves the
+   bottom-most layer position. */
+@layer opencode-portals;
+
 @import "tailwindcss";
 
 /* SpaceUI design tokens */

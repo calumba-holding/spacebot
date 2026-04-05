@@ -841,16 +841,19 @@ impl ProcessRunLogger {
 
         let count_query =
             format!("SELECT COUNT(*) as total FROM worker_runs w {count_where_clause}");
+        // NOTE: The `projects` table lives in the global instance DB (spacebot.db),
+        // not in the per-agent DB, as of migration 20260404120000. Worker rows keep
+        // their `project_id` column locally, but project names must be resolved by
+        // the caller via the global `ProjectStore`.
         let list_query = format!(
             "SELECT w.id, w.task, w.status, w.worker_type, w.channel_id, w.started_at, \
                     w.completed_at, w.transcript IS NOT NULL as has_transcript, \
                     w.tool_calls, w.opencode_port, w.opencode_session_id, w.directory, \
                     w.interactive, \
                     c.display_name as channel_name, \
-                    w.project_id, p.name as project_name \
+                    w.project_id \
              FROM worker_runs w \
              LEFT JOIN channels c ON w.channel_id = c.id \
-             LEFT JOIN projects p ON w.project_id = p.id \
              {list_where_clause} \
              ORDER BY w.started_at DESC \
              LIMIT ?2 OFFSET ?3"
@@ -905,7 +908,8 @@ impl ProcessRunLogger {
                 directory: row.try_get("directory").ok().flatten(),
                 interactive: row.try_get::<bool, _>("interactive").unwrap_or(false),
                 project_id: row.try_get("project_id").ok().flatten(),
-                project_name: row.try_get("project_name").ok().flatten(),
+                // Resolved by caller via the global `ProjectStore` — see module note.
+                project_name: None,
             })
             .collect();
 

@@ -30,7 +30,7 @@ type GroupBy = "project" | "agent";
 
 // ── Component ────────────────────────────────────────────────────────────
 
-export function Orchestrate() {
+export function Workbench() {
 	const [groupBy, setGroupBy] = useState<GroupBy>("project");
 	const [agentFilter, setAgentFilter] = useState<string | null>(null);
 	const queryClient = useQueryClient();
@@ -179,7 +179,7 @@ export function Orchestrate() {
 	}, [allWorkers]);
 
 	return (
-		<div className="flex h-full flex-col">
+		<div className="flex h-full flex-col bg-sidebar">
 			{/* Toolbar */}
 			<div className="flex items-center gap-3 border-b border-app-line px-4 py-2">
 				{/* Group by toggle */}

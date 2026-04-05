@@ -23,7 +23,7 @@ import {AgentTasks} from "@/routes/AgentTasks";
 import {GlobalTasks} from "@/routes/GlobalTasks";
 import {AgentChat} from "@/routes/AgentChat";
 import {Settings} from "@/routes/Settings";
-import {Orchestrate} from "@/routes/Orchestrate";
+import {Workbench} from "@/routes/Workbench";
 import {useLiveContext} from "@/hooks/useLiveContext";
 
 // ── Root layout ──────────────────────────────────────────────────────────
@@ -98,11 +98,11 @@ const logsRoute = createRoute({
 	},
 });
 
-const orchestrateRoute = createRoute({
+const workbenchRoute = createRoute({
 	getParentRoute: () => rootRoute,
-	path: "/orchestrate",
-	component: function OrchestratePage() {
-		return <Orchestrate />;
+	path: "/workbench",
+	component: function WorkbenchPage() {
+		return <Workbench />;
 	},
 });
 
@@ -255,7 +255,7 @@ const routeTree = rootRoute.addChildren([
 	dashboardRoute,
 	settingsRoute,
 	logsRoute,
-	orchestrateRoute,
+	workbenchRoute,
 	tasksRoute,
 	agentRoute,
 	agentChatRoute,

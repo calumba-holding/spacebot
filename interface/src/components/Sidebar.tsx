@@ -135,7 +135,7 @@ function SortableAgentItem({ agentId, displayName, gradientStart, gradientEnd, i
 const navItems = [
 	{ to: "/dashboard", icon: House, label: "Dashboard", exact: true },
 	{ to: "/", icon: TreeStructure, label: "Org Chart", exact: true },
-	{ to: "/orchestrate", icon: Wrench, label: "Workbench", exact: true },
+	{ to: "/workbench", icon: Wrench, label: "Workbench", exact: true },
 	{ to: "/tasks", icon: CheckSquare, label: "Tasks", exact: true },
 ] as const;
 
