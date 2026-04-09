@@ -71,7 +71,7 @@ export function PortalHeader({
 	const [showWorkers, setShowWorkers] = useState(false);
 
 	return (
-		<div className="flex items-center justify-between border-b border-app-line px-4 py-2">
+		<div className="flex items-center justify-between border-b border-app-line bg-app px-4 py-2">
 			<div className="flex items-center gap-2">
 				<h2 className="text-sm font-medium text-ink">{title}</h2>
 				{modelLabel && (

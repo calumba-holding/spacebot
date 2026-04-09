@@ -203,6 +203,34 @@ export function PortalPanel({ agentId }: PortalPanelProps) {
 
 	return (
 		<div className="relative flex h-full w-full min-w-0 flex-col">
+				{/* Grid background with accent glow — empty state only */}
+				{isEmpty && (
+					<>
+						<div
+							aria-hidden="true"
+							className="pointer-events-none absolute inset-0 z-0 opacity-100"
+							style={{
+								backgroundImage:
+									'linear-gradient(to right, color-mix(in srgb, var(--color-app-line) 45%, transparent) 1px, transparent 1px), linear-gradient(to bottom, color-mix(in srgb, var(--color-app-line) 45%, transparent) 1px, transparent 1px)',
+								backgroundSize: '28px 28px',
+								maskImage:
+									'linear-gradient(to bottom, rgba(0,0,0,0.42), rgba(0,0,0,0.08))',
+								WebkitMaskImage:
+									'linear-gradient(to bottom, rgba(0,0,0,0.42), rgba(0,0,0,0.08))',
+							}}
+						/>
+						<div
+							aria-hidden="true"
+							className="pointer-events-none absolute inset-0 z-0"
+							style={{
+								background:
+									'radial-gradient(circle at top, color-mix(in srgb, var(--color-accent) 8%, transparent), transparent 42%)',
+							}}
+						/>
+					</>
+				)}
+
+				<div className="relative z-10 flex min-h-0 flex-1 flex-col">
 				<PortalHeader
 					title={agentDisplayName}
 					modelLabel={modelLabel}
@@ -289,6 +317,7 @@ export function PortalPanel({ agentId }: PortalPanelProps) {
 						</div>
 					</>
 				)}
+				</div>
 		</div>
 	);
 }

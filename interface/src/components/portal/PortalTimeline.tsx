@@ -1,8 +1,8 @@
-import {useEffect, useRef} from "react";
+import {useEffect, useRef, useState} from "react";
 import {useQuery} from "@tanstack/react-query";
 import {Markdown, MessageBubble} from "@spacedrive/ai";
-import {File as FileIcon} from "@phosphor-icons/react";
-import {api, type AttachmentMeta, type TimelineItem, type WorkerListItem} from "@/api/client";
+import {CaretDown, File as FileIcon, GitBranch} from "@phosphor-icons/react";
+import {api, type AttachmentMeta, type TimelineBranchRun, type TimelineItem, type WorkerListItem} from "@/api/client";
 import {ToolCall, type ToolCallPair, tryParseJson, isErrorResult} from "@/components/ToolCall";
 import {PortalWorkerCard} from "./PortalWorkerCard";
 import clsx from "clsx";
@@ -179,6 +179,66 @@ function synthesizeWorker(
 	};
 }
 
+function PortalBranchCard({item}: {item: TimelineBranchRun}) {
+	const [expanded, setExpanded] = useState(false);
+	const isRunning = !item.completed_at;
+
+	return (
+		<div className="group flex min-w-0 flex-col items-start">
+			<div className="min-w-0 max-w-full overflow-hidden rounded-2xl border border-app-line/50 bg-app-box/30 backdrop-blur-sm">
+				<button
+					type="button"
+					onClick={() => setExpanded((v) => !v)}
+					className="flex w-full items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-app-box/30"
+				>
+					<div className="mt-0.5 shrink-0">
+						{isRunning ? (
+							<div className="flex size-7 items-center justify-center rounded-full bg-accent/15 text-accent">
+								<GitBranch className="size-4 animate-spin" weight="bold" />
+							</div>
+						) : (
+							<div className="flex size-7 items-center justify-center rounded-full bg-accent/15 text-accent">
+								<GitBranch className="size-4" weight="bold" />
+							</div>
+						)}
+					</div>
+					<div className="min-w-0 flex-1">
+						<div className="flex items-center gap-2">
+							<div className="line-clamp-2 min-w-0 flex-1 text-sm font-medium leading-5 text-ink">
+								{item.description}
+							</div>
+							<span
+								className={clsx(
+									"rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em]",
+									isRunning
+										? "bg-accent/12 text-accent"
+										: "bg-emerald-500/12 text-emerald-400",
+								)}
+							>
+								{isRunning ? "thinking" : "done"}
+							</span>
+						</div>
+					</div>
+					{item.conclusion && (
+						<CaretDown
+							className={clsx(
+								"mt-1 size-4 shrink-0 text-ink-faint transition-transform",
+								expanded ? "rotate-180" : "",
+							)}
+							weight="bold"
+						/>
+					)}
+				</button>
+				{expanded && item.conclusion && (
+					<div className="border-t border-app-line/30 px-4 py-3">
+						<Markdown content={item.conclusion} className="text-xs text-ink-dull" />
+					</div>
+				)}
+			</div>
+		</div>
+	);
+}
+
 export function PortalTimeline({
 	agentId,
 	conversationId,
@@ -197,18 +257,17 @@ export function PortalTimeline({
 		refetchInterval: 2000,
 	});
 
-	// Filter to built-in workers for this conversation. OpenCode workers get
-	// rendered in their own surface, not inline.
-	const builtInWorkers = (workersQuery.data?.workers ?? []).filter(
-		(w) => w.channel_id === conversationId && w.worker_type !== "opencode",
+	// Filter workers for this conversation.
+	const conversationWorkers = (workersQuery.data?.workers ?? []).filter(
+		(w) => w.channel_id === conversationId,
 	);
-	const builtInWorkerIds = new Set(builtInWorkers.map((w) => w.id));
+	const workerIds = new Set(conversationWorkers.map((w) => w.id));
 
-	// Filter worker_run items to only those matching built-in workers we've seen.
+	// Filter worker_run items to only those matching workers we've seen.
 	// Messages and other item types always render.
 	const visibleItems = timeline.filter((item) => {
 		if (item.type !== "worker_run") return true;
-		return builtInWorkerIds.has(item.id);
+		return workerIds.has(item.id);
 	});
 
 	// Smart auto-scroll: only when near bottom
@@ -277,9 +336,16 @@ export function PortalTimeline({
 							</div>
 						);
 					}
+					if (item.type === "branch_run") {
+						return (
+							<div key={item.id} className="py-1">
+								<PortalBranchCard item={item as TimelineBranchRun} />
+							</div>
+						);
+					}
 					if (item.type === "worker_run") {
 						const worker =
-							builtInWorkers.find((w) => w.id === item.id) ??
+							conversationWorkers.find((w) => w.id === item.id) ??
 							synthesizeWorker(item, conversationId);
 						return (
 							<div key={item.id} className="py-2">
