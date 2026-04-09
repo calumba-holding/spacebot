@@ -431,6 +431,7 @@ mod tests {
             worker_context: WorkerContextMode {
                 history: WorkerHistoryMode::Recent(20),
                 memory: WorkerMemoryMode::Tools,
+                wiki_write: false,
             },
             ..Default::default()
         };

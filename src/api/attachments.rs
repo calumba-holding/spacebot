@@ -46,6 +46,7 @@ pub(super) struct AttachmentServeQuery {
     /// When true, serve a thumbnail-sized version (for display in the UI).
     /// Currently serves the full file — thumbnail generation is a future enhancement.
     #[serde(default)]
+    #[allow(dead_code)]
     thumbnail: bool,
 }
 

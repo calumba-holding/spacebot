@@ -1337,7 +1337,7 @@ async fn run_cron_job(
 
     // Hold a control handle so we can cancel outstanding workers on timeout,
     // giving the LLM a chance to synthesize partial results before we give up.
-    let control_handle = channel.control_handle();
+    let _control_handle = channel.control_handle();
 
     // Spawn the channel's event loop
     let mut channel_handle = tokio::spawn(async move { channel.run().await });
@@ -1586,6 +1586,46 @@ fn record_cron_metrics(agent_id: &str, cron_id: &str, record: &CronExecutionReco
         .inc();
 }
 
+fn cron_response_summary(response: &OutboundResponse) -> Option<String> {
+    match response {
+        OutboundResponse::Text(text) => {
+            let text = text.trim();
+            (!text.is_empty()).then(|| text.to_string())
+        }
+        OutboundResponse::RichMessage { text, cards, .. } => {
+            let text = text.trim();
+            if !text.is_empty() {
+                Some(text.to_string())
+            } else {
+                let derived = OutboundResponse::text_from_cards(cards);
+                let derived = derived.trim();
+                (!derived.is_empty()).then(|| derived.to_string())
+            }
+        }
+        OutboundResponse::ThreadReply { text, .. }
+        | OutboundResponse::Ephemeral { text, .. }
+        | OutboundResponse::ScheduledMessage { text, .. } => {
+            let text = text.trim();
+            (!text.is_empty()).then(|| text.to_string())
+        }
+        OutboundResponse::File {
+            filename, caption, ..
+        } => caption
+            .as_deref()
+            .map(str::trim)
+            .filter(|caption| !caption.is_empty())
+            .map(ToOwned::to_owned)
+            .or_else(|| Some(format!("Attached file: {filename}"))),
+        OutboundResponse::Status(_)
+        | OutboundResponse::Reaction(_)
+        | OutboundResponse::RemoveReaction(_)
+        | OutboundResponse::StreamStart
+        | OutboundResponse::StreamChunk(_)
+        | OutboundResponse::StreamEnd => None,
+    }
+}
+
+#[cfg(test)]
 #[derive(Debug)]
 enum CronResponseWaitOutcome {
     Delivered(OutboundResponse),
@@ -1593,6 +1633,7 @@ enum CronResponseWaitOutcome {
     TimedOut,
 }
 
+#[cfg(test)]
 async fn await_cron_delivery_response(
     cron_id: &str,
     response_rx: &mut mpsc::Receiver<RoutedResponse>,
@@ -1622,6 +1663,7 @@ async fn await_cron_delivery_response(
     }
 }
 
+#[cfg(test)]
 fn normalize_cron_delivery_response(response: OutboundResponse) -> Option<OutboundResponse> {
     match response {
         OutboundResponse::Text(text) => {
@@ -1676,45 +1718,6 @@ fn normalize_cron_delivery_response(response: OutboundResponse) -> Option<Outbou
             mime_type,
             caption,
         }),
-        OutboundResponse::Status(_)
-        | OutboundResponse::Reaction(_)
-        | OutboundResponse::RemoveReaction(_)
-        | OutboundResponse::StreamStart
-        | OutboundResponse::StreamChunk(_)
-        | OutboundResponse::StreamEnd => None,
-    }
-}
-
-fn cron_response_summary(response: &OutboundResponse) -> Option<String> {
-    match response {
-        OutboundResponse::Text(text) => {
-            let text = text.trim();
-            (!text.is_empty()).then(|| text.to_string())
-        }
-        OutboundResponse::RichMessage { text, cards, .. } => {
-            let text = text.trim();
-            if !text.is_empty() {
-                Some(text.to_string())
-            } else {
-                let derived = OutboundResponse::text_from_cards(cards);
-                let derived = derived.trim();
-                (!derived.is_empty()).then(|| derived.to_string())
-            }
-        }
-        OutboundResponse::ThreadReply { text, .. }
-        | OutboundResponse::Ephemeral { text, .. }
-        | OutboundResponse::ScheduledMessage { text, .. } => {
-            let text = text.trim();
-            (!text.is_empty()).then(|| text.to_string())
-        }
-        OutboundResponse::File {
-            filename, caption, ..
-        } => caption
-            .as_deref()
-            .map(str::trim)
-            .filter(|caption| !caption.is_empty())
-            .map(ToOwned::to_owned)
-            .or_else(|| Some(format!("Attached file: {filename}"))),
         OutboundResponse::Status(_)
         | OutboundResponse::Reaction(_)
         | OutboundResponse::RemoveReaction(_)

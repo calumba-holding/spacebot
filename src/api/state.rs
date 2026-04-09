@@ -14,7 +14,7 @@ use crate::memory::{EmbeddingModel, MemorySearch};
 use crate::messaging::MessagingManager;
 use crate::messaging::portal::PortalAdapter;
 use crate::notifications::{
-    NewNotification, Notification, NotificationKind, NotificationSeverity, NotificationStore,
+    NewNotification, Notification, NotificationStore,
 };
 use crate::projects::ProjectStore;
 use crate::prompts::PromptEngine;
@@ -420,7 +420,7 @@ impl ApiState {
         let live_channel_tools = self.live_channel_tool_calls.clone();
         // Snapshot the notification store at registration time. It is set once
         // at startup before any agents register, so the snapshot is always valid.
-        let notif_store_snap = self.notification_store.load_full();
+        let _notif_store_snap = self.notification_store.load_full();
         tokio::spawn(async move {
             loop {
                 match agent_event_rx.recv().await {
